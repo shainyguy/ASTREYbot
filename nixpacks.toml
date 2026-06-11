@@ -1,0 +1,5 @@
+[start]
+cmd = "python main.py"
+
+[variables]
+DATABASE_PATH = "/data/astreybot.db"

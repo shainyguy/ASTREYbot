@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:astreys.ru)",
+      "Bash(python -m py_compile config.py states.py messages.py keyboards.py database.py gigachat.py main.py handlers/funnel.py handlers/admin.py handlers/user.py)",
+      "mcp__visualize__read_me",
+      "mcp__visualize__show_widget",
+      "Bash(del \"C:\\\\Users\\\\acer\\\\Desktop\\\\МОЕ\\\\боты\\\\astreybot\\\\nixpacks.toml\")",
+      "Bash(python -c \"import sys, os; sys.path.insert\\(0, '.'\\); from handlers import user, admin, funnel; print\\('handlers import OK'\\)\")",
+      "Bash(python -m py_compile handlers/admin.py)"
+    ]
+  }
+}

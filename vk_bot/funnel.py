@@ -27,9 +27,10 @@ async def _update_bot_msg_time(db_id: int) -> None:
 async def _maybe_ask_order_ready(vk_id: int, db_id: int, message: Message) -> None:
     count = _ai_message_count.get(vk_id, 0) + 1
     _ai_message_count[vk_id] = count
-    if count % 4 == 0:
-        text = _strip_md(msg.ORDER_READY_QUESTION.format(url=WEBSITE_URL))
-        await _send(message, text, vk_kb.kb_ai_chat())
+    if count % 3 == 0:
+        nudge_idx = (count // 3 - 1) % len(msg.ORDER_NUDGES)
+        nudge_text = _strip_md(msg.ORDER_NUDGES[nudge_idx].format(url=WEBSITE_URL))
+        await _send(message, nudge_text, vk_kb.kb_ai_chat())
 
 
 def vk_db_id(vk_id: int) -> int:
@@ -244,7 +245,7 @@ async def _handle_budget(message: Message, user_id: int, db_id: int, budget: str
     from handlers.funnel import _build_presentation
     pres_text = _strip_md(_build_presentation(occasion, recipient, budget))
     await _update_bot_msg_time(db_id)
-    await _send(message, pres_text + f"\n\n👉 Оформить заказ: {WEBSITE_URL}", vk_kb.kb_ai_chat())
+    await _send(message, pres_text + f"\n\n👉 Оформить заказ: {WEBSITE_URL}", vk_kb.kb_presentation())
     await _update_bot_msg_time(db_id)
     await _send(message, _strip_md(msg.AI_INTRO))
 

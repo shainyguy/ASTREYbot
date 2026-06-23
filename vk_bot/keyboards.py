@@ -23,6 +23,7 @@ def _keyboard(buttons_rows: list, one_time: bool = False, inline: bool = False) 
 def kb_welcome() -> str:
     return _keyboard([
         [_btn("🎁 Выбрать подарок", {"cmd": "start_funnel"}, "positive")],
+        [_link_btn("🛒 Заказать на сайте", WEBSITE_URL)],
         [_btn("❓ Задать вопрос", {"cmd": "ask_question"})],
         [_btn("🚚 Доставка", {"cmd": "faq_доставка"}), _btn("💳 Оплата", {"cmd": "faq_оплата"})],
     ])
@@ -66,14 +67,26 @@ def kb_budget() -> str:
     ], one_time=True)
 
 
+def kb_presentation() -> str:
+    return _keyboard([
+        [_link_btn("🛒 Оформить заказ на сайте", WEBSITE_URL)],
+        [_btn("💬 Задать вопрос", {"cmd": "ask_question"})],
+        [_link_btn("📋 Все товары", WEBSITE_URL)],
+        _back_btn(),
+    ])
+
+
 def kb_ai_chat() -> str:
     return _keyboard([
         [_link_btn("🛒 Заказать на сайте", WEBSITE_URL)],
+        [_btn("🎁 Подобрать подарок", {"cmd": "start_funnel"}, "positive")],
         [_btn("🚚 Доставка", {"cmd": "faq_доставка"}),
          _btn("💳 Оплата", {"cmd": "faq_оплата"})],
         [_btn("🛡 Гарантии", {"cmd": "faq_гарантия"}),
          _btn("⚡ Сроки", {"cmd": "faq_сроки"})],
-        [_btn("👨‍💼 Позвать менеджера", {"cmd": "call_manager"}, "negative")],
+        [_btn("👨‍💼 Позвать менеджера", {"cmd": "call_manager"}, "negative"),
+         _btn("📋 Меню", {"cmd": "restart"})],
+        _back_btn(),
     ])
 
 

@@ -9,8 +9,12 @@ from config import WEBSITE_URL
 def kb_welcome() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🎁 Выбрать подарок", callback_data="start_funnel"))
-    builder.row(InlineKeyboardButton(text="❓ Вопрос по заказу", callback_data="ask_question"))
-    builder.row(InlineKeyboardButton(text="🚚 Доставка и оплата", callback_data="faq_delivery"))
+    builder.row(InlineKeyboardButton(text="🛒 Заказать сейчас", url=WEBSITE_URL))
+    builder.row(InlineKeyboardButton(text="❓ Задать вопрос", callback_data="ask_question"))
+    builder.row(
+        InlineKeyboardButton(text="🚚 Доставка", callback_data="faq_доставка"),
+        InlineKeyboardButton(text="💳 Оплата", callback_data="faq_оплата"),
+    )
     return builder.as_markup()
 
 
@@ -76,12 +80,14 @@ def kb_presentation(budget: str) -> InlineKeyboardMarkup:
     ))
     builder.row(InlineKeyboardButton(text="💬 Задать вопрос", callback_data="ask_question"))
     builder.row(InlineKeyboardButton(text="📋 Посмотреть все товары", url=WEBSITE_URL))
+    _add_back(builder)
     return builder.as_markup()
 
 
 def kb_ai_chat() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🛒 Заказать сейчас", url=WEBSITE_URL))
+    builder.row(InlineKeyboardButton(text="🛒 Заказать на сайте", url=WEBSITE_URL))
+    builder.row(InlineKeyboardButton(text="🎁 Подобрать подарок", callback_data="start_funnel"))
     builder.row(
         InlineKeyboardButton(text="🚚 Доставка", callback_data="faq_доставка"),
         InlineKeyboardButton(text="💳 Оплата", callback_data="faq_оплата"),
@@ -90,7 +96,11 @@ def kb_ai_chat() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🛡 Гарантии", callback_data="faq_гарантия"),
         InlineKeyboardButton(text="⚡ Сроки", callback_data="faq_сроки"),
     )
-    builder.row(InlineKeyboardButton(text="👨‍💼 Позвать менеджера", callback_data="call_manager"))
+    builder.row(
+        InlineKeyboardButton(text="👨‍💼 Позвать менеджера", callback_data="call_manager"),
+        InlineKeyboardButton(text="📋 Меню", callback_data="restart"),
+    )
+    builder.row(BACK_BTN)
     return builder.as_markup()
 
 

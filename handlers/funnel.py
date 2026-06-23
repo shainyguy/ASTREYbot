@@ -26,13 +26,14 @@ async def _update_bot_msg_time(user_id: int) -> None:
 
 
 async def _maybe_ask_order_ready(user_id: int, state: FSMContext, message: Message) -> None:
-    """Спрашивает о готовности заказать каждые 4 сообщения AI."""
     count = _ai_message_count.get(user_id, 0) + 1
     _ai_message_count[user_id] = count
-    if count % 4 == 0:
+    if count % 3 == 0:
+        nudge_idx = (count // 3 - 1) % len(msg.ORDER_NUDGES)
+        nudge_text = msg.ORDER_NUDGES[nudge_idx]
         await message.answer(
-            msg.ORDER_READY_QUESTION.format(url=WEBSITE_URL),
-            reply_markup=kb.kb_presentation(""),
+            nudge_text.format(url=WEBSITE_URL),
+            reply_markup=kb.kb_ai_chat(),
             parse_mode="Markdown"
         )
 

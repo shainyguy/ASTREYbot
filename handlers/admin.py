@@ -5,10 +5,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 
 import database as db
+import gigachat as gc
 import messages as msg
 import keyboards as kb
 from states import Admin, Funnel
 from config import ADMIN_PASSWORD, ADMIN_IDS
+from vk_bot import states as vk_states
+from vk_bot.api import VKAPI
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -17,6 +20,13 @@ logger = logging.getLogger(__name__)
 active_takeovers: dict[int, int] = {}
 # user_id -> admin_id (обратный индекс)
 user_takeovers: dict[int, int] = {}
+
+# VK API для отправки сообщений от админа в VK
+_vk_api: VKAPI = None
+
+def set_vk_api(api: VKAPI) -> None:
+    global _vk_api
+    _vk_api = api
 
 
 def is_admin(user_id: int) -> bool:
@@ -298,10 +308,23 @@ async def cb_takeover(call: CallbackQuery, state: FSMContext, bot: Bot):
         parse_mode="Markdown"
     )
 
-    try:
-        await bot.send_message(user_id, msg.TAKEOVER_USER_NOTIFY, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id} about takeover: {e}")
+    # Устанавливаем VK state в MANAGER_TAKEOVER если это VK пользователь
+    if user_id < 0:
+        vk_user_id = abs(user_id)
+        vk_states.set_state(vk_user_id, vk_states.MANAGER_TAKEOVER)
+        try:
+            if _vk_api:
+                await _vk_api.send_message(
+                    vk_user_id,
+                    "👨‍💼 С вами связался менеджер АСТРЕЙ! Задавайте любые вопросы — он ответит лично 😊"
+                )
+        except Exception as e:
+            logger.error(f"Failed to notify VK user {vk_user_id}: {e}")
+    else:
+        try:
+            await bot.send_message(user_id, msg.TAKEOVER_USER_NOTIFY, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id} about takeover: {e}")
 
 
 @router.message(Command("release"))
@@ -323,13 +346,28 @@ async def cmd_release(message: Message, state: FSMContext, bot: Bot):
     await state.set_state(Admin.panel)
     await message.answer(msg.ADMIN_TAKEOVER_OFF.format(name=name))
 
-    try:
-        await bot.send_message(
-            user_id,
-            "💬 Наш менеджер завершил диалог. Если появятся вопросы — пиши, всегда помогу! 😊",
-        )
-    except Exception:
-        pass
+    # Возвращаем VK пользователя в AI-чат
+    if user_id < 0:
+        vk_user_id = abs(user_id)
+        vk_states.set_state(vk_user_id, vk_states.AI_CHAT)
+        vk_states.clear(vk_user_id)
+        gc.clear_history(user_id)
+        try:
+            if _vk_api:
+                await _vk_api.send_message(
+                    vk_user_id,
+                    "💬 Наш менеджер завершил диалог. Если появятся вопросы — пиши, всегда помогу! 😊"
+                )
+        except Exception as e:
+            logger.error(f"Failed to notify VK user {vk_user_id}: {e}")
+    else:
+        try:
+            await bot.send_message(
+                user_id,
+                "💬 Наш менеджер завершил диалог. Если появятся вопросы — пиши, всегда помогу! 😊",
+            )
+        except Exception:
+            pass
 
 
 @router.message(Admin.takeover)
@@ -348,10 +386,21 @@ async def admin_takeover_message(message: Message, bot: Bot):
 
     await db.log_message(user_id, "outgoing_admin", message.text or "[медиа]")
 
-    try:
-        await bot.send_message(user_id, message.text or "")
-    except Exception as e:
-        await message.answer(f"❌ Не удалось доставить сообщение: {e}")
+    # Отправка VK пользователю через VK API
+    if user_id < 0:
+        vk_user_id = abs(user_id)
+        try:
+            if _vk_api:
+                await _vk_api.send_message(vk_user_id, message.text or "")
+            else:
+                await message.answer("❌ VK API не инициализирован")
+        except Exception as e:
+            await message.answer(f"❌ Не удалось доставить в VK: {e}")
+    else:
+        try:
+            await bot.send_message(user_id, message.text or "")
+        except Exception as e:
+            await message.answer(f"❌ Не удалось доставить сообщение: {e}")
 
 
 # ══════════════════════════════════════════════

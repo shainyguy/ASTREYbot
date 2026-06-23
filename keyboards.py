@@ -14,6 +14,13 @@ def kb_welcome() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+BACK_BTN = InlineKeyboardButton(text="◀️ Назад", callback_data="back")
+
+def _add_back(builder: InlineKeyboardBuilder) -> InlineKeyboardBuilder:
+    builder.row(BACK_BTN)
+    return builder
+
+
 def kb_occasion() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -28,6 +35,7 @@ def kb_occasion() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="💝 Просто так", callback_data="occasion_просто так"),
         InlineKeyboardButton(text="✍️ Другой повод", callback_data="occasion_другое"),
     )
+    _add_back(builder)
     return builder.as_markup()
 
 
@@ -46,6 +54,7 @@ def kb_recipient() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="👶 Ребёнку", callback_data="recipient_ребёнку"),
     )
     builder.row(InlineKeyboardButton(text="✍️ Другому человеку", callback_data="recipient_другому"))
+    _add_back(builder)
     return builder.as_markup()
 
 
@@ -55,6 +64,7 @@ def kb_budget() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="💳 1 000 — 3 000₽", callback_data="budget_1000-3000"))
     builder.row(InlineKeyboardButton(text="💎 От 3 000₽", callback_data="budget_3000+"))
     builder.row(InlineKeyboardButton(text="🤷 Бюджет не важен", callback_data="budget_не важно"))
+    _add_back(builder)
     return builder.as_markup()
 
 

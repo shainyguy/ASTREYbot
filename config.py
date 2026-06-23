@@ -17,6 +17,12 @@ GIGACHAT_SCOPE: str = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "/data/astreybot.db")
 
+VK_TOKEN: str = os.getenv("VK_TOKEN", "")
+VK_GROUP_ID: int = int(os.getenv("VK_GROUP_ID", "0"))
+ADMIN_VK_IDS: List[int] = [
+    int(x.strip()) for x in os.getenv("ADMIN_VK_IDS", "").split(",") if x.strip()
+]
+
 WEBSITE_URL: str = "https://astreys.ru"
 
 AI_CONFUSION_THRESHOLD: int = 3

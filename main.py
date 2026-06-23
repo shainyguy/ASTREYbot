@@ -14,6 +14,8 @@ from aiogram.enums import ParseMode
 import config
 import database as db
 import gigachat as gc
+import notifier
+import inactivity
 from handlers import user, admin, funnel
 
 logging.basicConfig(
@@ -27,50 +29,75 @@ async def main():
     if not config.BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения!")
 
-    # Инициализация БД
+    # ── База данных ──
     db.set_db_path(config.DATABASE_PATH)
     await db.init_db()
-    logger.info(f"Database initialized at {config.DATABASE_PATH}")
+    logger.info(f"Database: {config.DATABASE_PATH}")
 
-    # Инициализация GigaChat
+    # ── GigaChat ──
     auth_key = config.GIGACHAT_AUTH_KEY
     if not auth_key and config.GIGACHAT_CLIENT_ID and config.GIGACHAT_CLIENT_SECRET:
         import base64
         raw = f"{config.GIGACHAT_CLIENT_ID}:{config.GIGACHAT_CLIENT_SECRET}"
         auth_key = base64.b64encode(raw.encode()).decode()
 
+    gigachat_instance = None
     if auth_key:
-        funnel.gigachat_client = gc.GigaChatClient(auth_key, config.GIGACHAT_SCOPE)
-        logger.info("GigaChat client initialized")
+        gigachat_instance = gc.GigaChatClient(auth_key, config.GIGACHAT_SCOPE)
+        funnel.gigachat_client = gigachat_instance
+        logger.info("GigaChat: initialized")
     else:
-        logger.warning("GigaChat credentials not provided — AI responses disabled")
+        logger.warning("GigaChat: credentials missing — AI disabled")
 
-    # Инициализация бота
-    bot = Bot(
+    # ── Telegram бот ──
+    tg_bot = Bot(
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
+    notifier.set_bot(tg_bot)
 
-    # Регистрация роутеров (порядок важен!)
+    dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)
     dp.include_router(funnel.router)
     dp.include_router(user.router)
 
-    # Уведомление админов о запуске
+    # ── VK бот ──
+    vk_enabled = False
+    if config.VK_TOKEN:
+        try:
+            from vk_bot import funnel as vk_funnel
+            if gigachat_instance:
+                vk_funnel.gigachat_client = gigachat_instance
+            vk_enabled = True
+            logger.info("VK bot: ready")
+        except Exception as e:
+            logger.error(f"VK bot init failed: {e}")
+    else:
+        logger.warning("VK_TOKEN not set — VK bot disabled")
+
+    # ── Уведомление о запуске ──
+    platforms = "Telegram ✅" + (" | ВКонтакте ✅" if vk_enabled else " | ВКонтакте ❌ (нет токена)")
     for admin_id in config.ADMIN_IDS:
         try:
-            await bot.send_message(
+            await tg_bot.send_message(
                 admin_id,
-                "🚀 *Бот АСТРЕЙ запущен!*\n\nВсе системы работают нормально.\n/admin — панель управления",
-                parse_mode="Markdown"
+                f"🚀 *Бот АСТРЕЙ запущен!*\n\n{platforms}\n\n/admin — панель управления",
+                parse_mode="Markdown",
             )
         except Exception:
             pass
 
-    logger.info("Bot started polling...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    # ── Монитор неактивности ──
+    tasks = [dp.start_polling(tg_bot, allowed_updates=dp.resolve_used_update_types())]
+    tasks.append(inactivity.run_inactivity_monitor())
+
+    # ── Запуск VK бота ──
+    if vk_enabled:
+        from vk_bot.bot import run_vk_bot
+        tasks.append(run_vk_bot())
+
+    logger.info(f"Starting {len(tasks)} task(s)...")
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

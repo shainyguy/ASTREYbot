@@ -7,7 +7,11 @@
       "mcp__visualize__show_widget",
       "Bash(del \"C:\\\\Users\\\\acer\\\\Desktop\\\\МОЕ\\\\боты\\\\astreybot\\\\nixpacks.toml\")",
       "Bash(python -c \"import sys, os; sys.path.insert\\(0, '.'\\); from handlers import user, admin, funnel; print\\('handlers import OK'\\)\")",
-      "Bash(python -m py_compile handlers/admin.py)"
+      "Bash(python -m py_compile handlers/admin.py)",
+      "WebFetch(domain:vk.com)",
+      "Bash(python -m py_compile notifier.py config.py database.py main.py vk_bot/states.py vk_bot/keyboards.py vk_bot/funnel.py vk_bot/bot.py)",
+      "Bash(python -m py_compile vk_bot/api.py vk_bot/longpoll.py vk_bot/bot.py vk_bot/funnel.py vk_bot/states.py vk_bot/keyboards.py main.py notifier.py)",
+      "Bash(python -m py_compile vk_bot/bot.py main.py)"
     ]
   }
 }

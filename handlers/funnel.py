@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -16,6 +17,25 @@ logger = logging.getLogger(__name__)
 # Глобальный GigaChat клиент (инициализируется в main.py)
 gigachat_client: gc.GigaChatClient = None
 
+# Счётчик сообщений для предложения заказать
+_ai_message_count: dict[int, int] = {}
+
+
+async def _update_bot_msg_time(user_id: int) -> None:
+    await db.update_last_bot_message(user_id)
+
+
+async def _maybe_ask_order_ready(user_id: int, state: FSMContext, message: Message) -> None:
+    """Спрашивает о готовности заказать каждые 4 сообщения AI."""
+    count = _ai_message_count.get(user_id, 0) + 1
+    _ai_message_count[user_id] = count
+    if count % 4 == 0:
+        await message.answer(
+            msg.ORDER_READY_QUESTION.format(url=WEBSITE_URL),
+            reply_markup=kb.kb_presentation(""),
+            parse_mode="Markdown"
+        )
+
 
 # ══════════════════════════════════════════════
 #  СТАРТ ВОРОНКИ
@@ -26,6 +46,7 @@ async def cb_start_funnel(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(Funnel.choose_occasion)
     await db.upsert_lead(call.from_user.id, stage="choose_occasion")
+    await _update_bot_msg_time(call.from_user.id)
     await call.message.edit_text(msg.CHOOSE_OCCASION, reply_markup=kb.kb_occasion(), parse_mode="Markdown")
 
 
@@ -35,11 +56,43 @@ async def cb_ask_question(call: CallbackQuery, state: FSMContext):
     current = await state.get_state()
     if current not in (Funnel.ai_chat, Funnel.presentation):
         await state.set_state(Funnel.ai_chat)
+    await _update_bot_msg_time(call.from_user.id)
     await call.message.answer(
         "💬 *Задай любой вопрос про наши подарки!*\n\nОтвечу мгновенно 👇",
         reply_markup=kb.kb_ai_chat(),
         parse_mode="Markdown"
     )
+
+
+@router.callback_query(F.data == "back")
+async def cb_back(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    current = await state.get_state()
+
+    if current == Funnel.choose_occasion:
+        await state.set_state(Funnel.welcome)
+        await call.message.edit_text(msg.WELCOME, reply_markup=kb.kb_welcome(), parse_mode="Markdown")
+    elif current == Funnel.choose_recipient:
+        await state.set_state(Funnel.choose_occasion)
+        await call.message.edit_text(msg.CHOOSE_OCCASION, reply_markup=kb.kb_occasion(), parse_mode="Markdown")
+    elif current == Funnel.choose_budget:
+        await state.set_state(Funnel.choose_recipient)
+        await call.message.edit_text(msg.CHOOSE_RECIPIENT, reply_markup=kb.kb_recipient(), parse_mode="Markdown")
+    elif current == Funnel.presentation:
+        await state.set_state(Funnel.choose_budget)
+        await call.message.edit_text(msg.CHOOSE_BUDGET, reply_markup=kb.kb_budget(), parse_mode="Markdown")
+    elif current == Funnel.ai_chat:
+        data = await state.get_data()
+        if data.get("budget"):
+            await state.set_state(Funnel.presentation)
+            occasion = data.get("occasion", "другое")
+            recipient = data.get("recipient", "другому")
+            budget = data.get("budget", "до 1000")
+            text = _build_presentation(occasion, recipient, budget)
+            await call.message.edit_text(text, reply_markup=kb.kb_presentation(budget), parse_mode="Markdown")
+        else:
+            await state.set_state(Funnel.choose_budget)
+            await call.message.edit_text(msg.CHOOSE_BUDGET, reply_markup=kb.kb_budget(), parse_mode="Markdown")
 
 
 @router.callback_query(F.data == "restart")
@@ -63,6 +116,7 @@ async def cb_occasion(call: CallbackQuery, state: FSMContext):
 
     await db.update_user(call.from_user.id, occasion=occasion, stage="choose_recipient")
     await db.upsert_lead(call.from_user.id, occasion=occasion, stage="choose_recipient")
+    await _update_bot_msg_time(call.from_user.id)
 
     await call.message.edit_text(msg.CHOOSE_RECIPIENT, reply_markup=kb.kb_recipient(), parse_mode="Markdown")
 
@@ -75,6 +129,7 @@ async def msg_occasion_custom(message: Message, state: FSMContext):
 
     await db.update_user(message.from_user.id, occasion=occasion, stage="choose_recipient")
     await db.upsert_lead(message.from_user.id, occasion=occasion, stage="choose_recipient")
+    await _update_bot_msg_time(message.from_user.id)
 
     await message.answer(msg.CHOOSE_RECIPIENT, reply_markup=kb.kb_recipient(), parse_mode="Markdown")
 
@@ -92,6 +147,7 @@ async def cb_recipient(call: CallbackQuery, state: FSMContext):
 
     await db.update_user(call.from_user.id, recipient=recipient, stage="choose_budget")
     await db.upsert_lead(call.from_user.id, recipient=recipient, stage="choose_budget")
+    await _update_bot_msg_time(call.from_user.id)
 
     await call.message.edit_text(msg.CHOOSE_BUDGET, reply_markup=kb.kb_budget(), parse_mode="Markdown")
 
@@ -104,6 +160,7 @@ async def msg_recipient_custom(message: Message, state: FSMContext):
 
     await db.update_user(message.from_user.id, recipient=recipient, stage="choose_budget")
     await db.upsert_lead(message.from_user.id, recipient=recipient, stage="choose_budget")
+    await _update_bot_msg_time(message.from_user.id)
 
     await message.answer(msg.CHOOSE_BUDGET, reply_markup=kb.kb_budget(), parse_mode="Markdown")
 
@@ -133,9 +190,11 @@ async def cb_budget(call: CallbackQuery, state: FSMContext):
     )
 
     text = _build_presentation(occasion, recipient, budget_raw)
+    await _update_bot_msg_time(call.from_user.id)
     await call.message.edit_text(text, reply_markup=kb.kb_presentation(budget_raw), parse_mode="Markdown")
 
     # Сразу предлагаем AI-чат
+    await _update_bot_msg_time(call.from_user.id)
     await call.message.answer(msg.AI_INTRO, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
     await state.set_state(Funnel.ai_chat)
 
@@ -231,9 +290,11 @@ async def msg_ai_chat(message: Message, state: FSMContext, bot: Bot):
         gc.add_to_history(user_id, "user", text)
         gc.add_to_history(user_id, "assistant", ai_response)
         await db.update_user(user_id, ai_confusion_count=0)
+        await _update_bot_msg_time(user_id)
 
         await db.log_message(user_id, "outgoing", ai_response)
         await message.answer(ai_response, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
+        await _maybe_ask_order_ready(user_id, state, message)
 
         # После 3 AI ответов — предлагаем оставить контакт
         history_len = len(gc.get_history(user_id))
@@ -264,6 +325,7 @@ def _check_faq(text: str) -> str:
 @router.callback_query(F.data.startswith("faq_"))
 async def cb_faq(call: CallbackQuery):
     await call.answer()
+    await _update_bot_msg_time(call.from_user.id)
     key = call.data.split("faq_", 1)[1]
     answer = msg.FAQ.get(key)
     if answer:
@@ -299,6 +361,7 @@ async def msg_get_name(message: Message, state: FSMContext):
     await state.set_state(Funnel.get_phone)
     await db.update_user(message.from_user.id, full_name=name, stage="get_phone")
     await db.upsert_lead(message.from_user.id, full_name=name, stage="get_phone")
+    await _update_bot_msg_time(message.from_user.id)
 
     await message.answer(
         msg.GET_PHONE.format(name=name),
@@ -325,6 +388,7 @@ async def msg_get_phone_text(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         name = data.get("full_name", "")
         await state.set_state(Funnel.completed)
+        await _update_bot_msg_time(message.from_user.id)
         await message.answer(
             msg.SKIP_PHONE.format(url=WEBSITE_URL),
             reply_markup=kb.kb_go_to_site(),
@@ -354,6 +418,7 @@ async def _complete_lead(message: Message, state: FSMContext, bot: Bot, phone: s
 
     await state.set_state(Funnel.completed)
     await db.update_user(user_id, phone=phone, stage="completed")
+    await _update_bot_msg_time(user_id)
     await db.upsert_lead(
         user_id,
         full_name=name,

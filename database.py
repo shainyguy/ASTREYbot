@@ -81,23 +81,46 @@ async def init_db():
         """)
         await db.commit()
 
+    # Миграция для существующих БД
+    async with aiosqlite.connect(_DB_PATH) as db:
+        for stmt in [
+            "ALTER TABLE users ADD COLUMN platform TEXT DEFAULT 'telegram'",
+            "ALTER TABLE leads ADD COLUMN platform TEXT DEFAULT 'telegram'",
+            "ALTER TABLE users ADD COLUMN last_bot_message_at TEXT",
+            "ALTER TABLE users ADD COLUMN inactivity_notified INTEGER DEFAULT 0",
+        ]:
+            try:
+                await db.execute(stmt)
+                await db.commit()
+            except Exception:
+                pass  # Колонка уже существует
+
 
 # ─────────────────────────────────────────────
 #  USERS
 # ─────────────────────────────────────────────
 
 async def upsert_user(telegram_id: int, username: str = None, first_name: str = None,
-                      last_name: str = None) -> None:
+                      last_name: str = None, platform: str = "telegram") -> None:
     async with aiosqlite.connect(_DB_PATH) as db:
         await db.execute("""
-            INSERT INTO users (telegram_id, username, first_name, last_name)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (telegram_id, username, first_name, last_name, platform)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = COALESCE(excluded.username, username),
                 first_name = COALESCE(excluded.first_name, first_name),
                 last_name = COALESCE(excluded.last_name, last_name),
                 updated_at = datetime('now')
-        """, (telegram_id, username, first_name, last_name))
+        """, (telegram_id, username, first_name, last_name, platform))
+        await db.commit()
+
+
+async def update_last_bot_message(telegram_id: int) -> None:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET last_bot_message_at = datetime('now'), inactivity_notified = 0 WHERE telegram_id = ?",
+            (telegram_id,)
+        )
         await db.commit()
 
 

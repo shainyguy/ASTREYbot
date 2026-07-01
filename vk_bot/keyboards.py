@@ -25,6 +25,7 @@ def kb_welcome() -> str:
         [_btn("🎁 Выбрать подарок", {"cmd": "start_funnel"}, "positive")],
         [_link_btn("🛒 Заказать на сайте", WEBSITE_URL)],
         [_btn("❓ Задать вопрос", {"cmd": "ask_question"})],
+        [_btn("⏰ Напомнить о важной дате", {"cmd": "reminder_start"})],
         [_btn("🚚 Доставка", {"cmd": "faq_доставка"}), _btn("💳 Оплата", {"cmd": "faq_оплата"})],
     ])
 
@@ -87,6 +88,23 @@ def kb_ai_chat() -> str:
         [_btn("👨‍💼 Позвать менеджера", {"cmd": "call_manager"}, "negative"),
          _btn("📋 Меню", {"cmd": "restart"})],
         _back_btn(),
+    ])
+
+
+def kb_reminder_days() -> str:
+    return _keyboard([
+        [_btn("За 1 день", {"cmd": "remind_days", "days": 1}),
+         _btn("За 3 дня", {"cmd": "remind_days", "days": 3})],
+        [_btn("За 5 дней", {"cmd": "remind_days", "days": 5}),
+         _btn("За 7 дней", {"cmd": "remind_days", "days": 7})],
+        _back_btn(),
+    ], one_time=True)
+
+
+def kb_reminder_saved() -> str:
+    return _keyboard([
+        [_btn("🎁 Выбрать подарок", {"cmd": "start_funnel"}, "positive")],
+        [_btn("📋 Меню", {"cmd": "restart"})],
     ])
 
 

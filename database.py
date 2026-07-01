@@ -78,6 +78,18 @@ async def init_db():
                 sent_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                platform TEXT DEFAULT 'telegram',
+                event_name TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                remind_days_before INTEGER DEFAULT 3,
+                reminded_years TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         await db.commit()
 
@@ -274,6 +286,71 @@ async def get_leads(status: str = None, page: int = 0, per_page: int = 10) -> Li
 # ─────────────────────────────────────────────
 #  STATISTICS
 # ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+#  REMINDERS
+# ─────────────────────────────────────────────
+
+async def add_reminder(telegram_id: int, platform: str, event_name: str,
+                       event_date: str, remind_days_before: int) -> int:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        cursor = await db.execute(
+            """INSERT INTO reminders (telegram_id, platform, event_name, event_date, remind_days_before)
+               VALUES (?, ?, ?, ?, ?)""",
+            (telegram_id, platform, event_name, event_date, remind_days_before)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_active_reminders() -> List[Dict]:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM reminders WHERE is_active = 1"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def mark_reminder_sent(reminder_id: int, year: int) -> None:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT reminded_years FROM reminders WHERE id = ?", (reminder_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row:
+            years = row["reminded_years"] or ""
+            years_list = [y for y in years.split(",") if y]
+            if str(year) not in years_list:
+                years_list.append(str(year))
+            await db.execute(
+                "UPDATE reminders SET reminded_years = ? WHERE id = ?",
+                (",".join(years_list), reminder_id)
+            )
+            await db.commit()
+
+
+async def get_user_reminders(telegram_id: int) -> List[Dict]:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM reminders WHERE telegram_id = ? AND is_active = 1 ORDER BY created_at DESC",
+            (telegram_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def deactivate_reminder(reminder_id: int, telegram_id: int) -> None:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "UPDATE reminders SET is_active = 0 WHERE id = ? AND telegram_id = ?",
+            (reminder_id, telegram_id)
+        )
+        await db.commit()
+
 
 async def get_stats() -> Dict[str, Any]:
     async with aiosqlite.connect(_DB_PATH) as db:

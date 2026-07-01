@@ -13,6 +13,12 @@ class Funnel(StatesGroup):
     completed = State()
 
 
+class Reminder(StatesGroup):
+    set_event = State()
+    set_date = State()
+    set_days = State()
+
+
 class Admin(StatesGroup):
     waiting_password = State()
     panel = State()

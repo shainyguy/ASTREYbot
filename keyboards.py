@@ -11,6 +11,7 @@ def kb_welcome() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🎁 Выбрать подарок", callback_data="start_funnel"))
     builder.row(InlineKeyboardButton(text="🛒 Заказать сейчас", url=WEBSITE_URL))
     builder.row(InlineKeyboardButton(text="❓ Задать вопрос", callback_data="ask_question"))
+    builder.row(InlineKeyboardButton(text="⏰ Напомнить о важной дате", callback_data="reminder_start"))
     builder.row(
         InlineKeyboardButton(text="🚚 Доставка", callback_data="faq_доставка"),
         InlineKeyboardButton(text="💳 Оплата", callback_data="faq_оплата"),
@@ -101,6 +102,40 @@ def kb_ai_chat() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📋 Меню", callback_data="restart"),
     )
     builder.row(BACK_BTN)
+    return builder.as_markup()
+
+
+def kb_reminder_days() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="За 1 день", callback_data="remind_days_1"),
+        InlineKeyboardButton(text="За 3 дня", callback_data="remind_days_3"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="За 5 дней", callback_data="remind_days_5"),
+        InlineKeyboardButton(text="За 7 дней", callback_data="remind_days_7"),
+    )
+    builder.row(BACK_BTN)
+    return builder.as_markup()
+
+
+def kb_reminder_saved() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📋 Мои напоминания", callback_data="my_reminders"))
+    builder.row(InlineKeyboardButton(text="🎁 Выбрать подарок", callback_data="start_funnel"))
+    builder.row(InlineKeyboardButton(text="📋 Меню", callback_data="restart"))
+    return builder.as_markup()
+
+
+def kb_my_reminders(reminders: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for r in reminders:
+        builder.row(InlineKeyboardButton(
+            text=f"🗑 {r['event_name']} ({r['event_date']})",
+            callback_data=f"del_reminder_{r['id']}"
+        ))
+    builder.row(InlineKeyboardButton(text="➕ Добавить напоминание", callback_data="reminder_start"))
+    builder.row(InlineKeyboardButton(text="📋 Меню", callback_data="restart"))
     return builder.as_markup()
 
 

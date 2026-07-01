@@ -14,6 +14,9 @@ GET_NAME = "get_name"
 GET_PHONE = "get_phone"
 COMPLETED = "completed"
 MANAGER_TAKEOVER = "manager_takeover"
+SET_REMINDER_EVENT = "set_reminder_event"
+SET_REMINDER_DATE = "set_reminder_date"
+SET_REMINDER_DAYS = "set_reminder_days"
 
 
 def get_state(user_id: int) -> str:

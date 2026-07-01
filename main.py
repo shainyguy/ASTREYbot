@@ -16,6 +16,7 @@ import database as db
 import gigachat as gc
 import notifier
 import inactivity
+import reminder_scheduler
 from handlers import user, admin, funnel
 
 logging.basicConfig(
@@ -55,6 +56,7 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     notifier.set_bot(tg_bot)
+    reminder_scheduler.set_bot(tg_bot)
 
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)
@@ -87,9 +89,10 @@ async def main():
         except Exception:
             pass
 
-    # ── Монитор неактивности ──
+    # ── Монитор неактивности + напоминания ──
     tasks = [dp.start_polling(tg_bot, allowed_updates=dp.resolve_used_update_types())]
     tasks.append(inactivity.run_inactivity_monitor())
+    tasks.append(reminder_scheduler.run_reminder_scheduler())
 
     # ── Запуск VK бота ──
     if vk_enabled:

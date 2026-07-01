@@ -8,7 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
-from states import Funnel
+from states import Funnel, Reminder
 from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL
 
 router = Router()
@@ -548,3 +548,115 @@ async def _notify_admin_lead_no_phone(bot: Bot, user_id: int):
 def _now_str() -> str:
     from datetime import datetime
     return datetime.now().strftime("%d.%m.%Y %H:%M")
+
+
+# ══════════════════════════════════════════════
+#  НАПОМИНАНИЯ О ВАЖНОЙ ДАТЕ
+# ══════════════════════════════════════════════
+
+@router.callback_query(F.data == "reminder_start")
+async def cb_reminder_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(Reminder.set_event)
+    await call.message.answer(
+        "⏰ *Напомню о важной дате!*\n\n"
+        "Введи название события, например:\n"
+        "_День рождения мамы_, _Годовщина_, _День свадьбы_",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(Reminder.set_event)
+async def msg_reminder_event(message: Message, state: FSMContext):
+    event = message.text.strip()
+    if len(event) < 2 or len(event) > 100:
+        await message.answer("Название слишком короткое или длинное. Попробуй ещё раз:")
+        return
+    await state.update_data(reminder_event=event)
+    await state.set_state(Reminder.set_date)
+    await message.answer(
+        f"📅 *Отлично!* Запомнил: _{event}_\n\n"
+        "Теперь введи дату события в формате *ДД.ММ* или *ДД.ММ.ГГГГ*\n\n"
+        "Примеры: `25.03` или `25.03.1990`\n"
+        "_Если введёшь только день и месяц — буду напоминать каждый год_ 🔁",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(Reminder.set_date)
+async def msg_reminder_date(message: Message, state: FSMContext):
+    import re
+    text = message.text.strip()
+    if re.fullmatch(r"\d{2}\.\d{2}", text):
+        event_date = text
+    elif re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", text):
+        event_date = text
+    else:
+        await message.answer(
+            "Введи дату в формате *ДД.ММ* или *ДД.ММ.ГГГГ* (например: 25.03 или 25.03.1990)",
+            parse_mode="Markdown"
+        )
+        return
+    await state.update_data(reminder_date=event_date)
+    await state.set_state(Reminder.set_days)
+    await message.answer(
+        f"✅ Дата: *{event_date}*\n\nЗа сколько дней напомнить?",
+        reply_markup=kb.kb_reminder_days(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("remind_days_"), Reminder.set_days)
+async def cb_reminder_days(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    days = int(call.data.split("remind_days_")[1])
+    data = await state.get_data()
+    event = data.get("reminder_event", "")
+    event_date = data.get("reminder_date", "")
+
+    await db.add_reminder(
+        telegram_id=call.from_user.id,
+        platform="telegram",
+        event_name=event,
+        event_date=event_date,
+        remind_days_before=days,
+    )
+    await state.set_state(Funnel.welcome)
+    await call.message.edit_text(
+        f"🎉 *Напоминание сохранено!*\n\n"
+        f"📅 Событие: *{event}*\n"
+        f"📆 Дата: *{event_date}*\n"
+        f"⏰ Напомню за *{days} дн.* до события\n\n"
+        f"_Я также предложу идеи подарков! 🎁_",
+        reply_markup=kb.kb_reminder_saved(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data == "my_reminders")
+async def cb_my_reminders(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    reminders = await db.get_user_reminders(call.from_user.id)
+    if not reminders:
+        await call.message.answer(
+            "У тебя пока нет активных напоминаний.\n\nНажми ⏰, чтобы добавить!",
+            reply_markup=kb.kb_reminder_saved()
+        )
+        return
+    await call.message.answer(
+        "📋 *Твои напоминания:*\n\n"
+        "Нажми на кнопку чтобы удалить напоминание:",
+        reply_markup=kb.kb_my_reminders(reminders),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("del_reminder_"))
+async def cb_del_reminder(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    reminder_id = int(call.data.split("del_reminder_")[1])
+    await db.deactivate_reminder(reminder_id, call.from_user.id)
+    await call.message.edit_text(
+        "🗑 Напоминание удалено.",
+        reply_markup=kb.kb_reminder_saved()
+    )

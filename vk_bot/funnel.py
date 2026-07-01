@@ -108,6 +108,77 @@ async def handle_message(message: Message) -> None:
         await _show_welcome(message, user_id, db_id)
         return
 
+    # ── Напоминание: старт ──
+    if cmd == "reminder_start":
+        st.set_state(user_id, st.SET_REMINDER_EVENT)
+        await _send(message,
+            "⏰ Напомню о важной дате!\n\n"
+            "Введи название события, например:\n"
+            "День рождения мамы, Годовщина, День свадьбы"
+        )
+        return
+
+    # ── Напоминание: событие введено ──
+    if state == st.SET_REMINDER_EVENT:
+        event = raw_text
+        if len(event) < 2 or len(event) > 100:
+            await _send(message, "Название слишком короткое или длинное. Попробуй ещё раз:")
+            return
+        st.update_data(user_id, reminder_event=event)
+        st.set_state(user_id, st.SET_REMINDER_DATE)
+        await _send(message,
+            f"Отлично! Запомнил: {event}\n\n"
+            "Теперь введи дату события в формате ДД.ММ или ДД.ММ.ГГГГ\n"
+            "Примеры: 25.03 или 25.03.1990\n\n"
+            "Если введёшь только день и месяц — буду напоминать каждый год"
+        )
+        return
+
+    # ── Напоминание: дата введена ──
+    if state == st.SET_REMINDER_DATE:
+        import re as _re
+        text_clean = raw_text.strip()
+        if _re.fullmatch(r"\d{2}\.\d{2}", text_clean) or _re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", text_clean):
+            st.update_data(user_id, reminder_date=text_clean)
+            st.set_state(user_id, st.SET_REMINDER_DAYS)
+            await _send(message,
+                f"Дата: {text_clean}\n\nЗа сколько дней напомнить?",
+                vk_kb.kb_reminder_days()
+            )
+        else:
+            await _send(message,
+                "Введи дату в формате ДД.ММ или ДД.ММ.ГГГГ (например: 25.03 или 25.03.1990)"
+            )
+        return
+
+    # ── Напоминание: выбор дней ──
+    if state == st.SET_REMINDER_DAYS:
+        days = payload.get("days")
+        if days:
+            data = st.get_data(user_id)
+            event = data.get("reminder_event", "")
+            event_date = data.get("reminder_date", "")
+            await db.add_reminder(
+                telegram_id=db_id,
+                platform="vk",
+                event_name=event,
+                event_date=event_date,
+                remind_days_before=int(days),
+            )
+            st.set_state(user_id, st.WELCOME)
+            await _send(message,
+                f"Напоминание сохранено!\n\n"
+                f"Событие: {event}\n"
+                f"Дата: {event_date}\n"
+                f"Напомню за {days} дн. до события\n\n"
+                f"Я также предложу идеи подарков!",
+                vk_kb.kb_reminder_saved()
+            )
+        else:
+            await _send(message, "Нажми одну из кнопок, чтобы выбрать количество дней:",
+                        vk_kb.kb_reminder_days())
+        return
+
     # ── Шаг 1: Старт воронки ──
     if cmd == "start_funnel" or (state == st.WELCOME and raw_text == "🎁 Выбрать подарок"):
         await _ask_occasion(message, user_id, db_id)

@@ -33,47 +33,22 @@ async def cmd_start(message: Message, state: FSMContext):
         parts = text.split("_", 1)
         if len(parts) == 2 and parts[1].isdigit():
             order_id = int(parts[1])
-            await state.update_data(sub_order_id=order_id)
-            await state.set_state(Funnel.subscribe_email)
+            await db.add_subscription(
+                chat_id=message.from_user.id,
+                platform="telegram",
+                order_id=order_id,
+                email=None,
+            )
             await message.answer(
-                f"📋 *Подписка на заказ #{order_id}*\n\n"
-                "Введи свой email, указанный при оформлении заказа, чтобы я мог проверить:\n\n"
-                "Например: `ivan@example.com`",
+                f"✅ *Подписка оформлена!*\n\n"
+                f"Я буду уведомлять тебя о смене статуса заказа *#{order_id}* 🚀\n\n"
+                f"Чтобы отписаться: `/unsubscribe {order_id}`",
                 parse_mode="Markdown"
             )
             return
 
     await state.set_state(Funnel.welcome)
     await message.answer(msg.WELCOME, reply_markup=kb.kb_welcome(), parse_mode="Markdown")
-
-
-@router.message(Funnel.subscribe_email)
-async def msg_subscribe_email(message: Message, state: FSMContext):
-    email = message.text.strip()
-    if "@" not in email:
-        await message.answer("❌ Введите корректный email (например, `ivan@example.com`)", parse_mode="Markdown")
-        return
-
-    data = await state.get_data()
-    order_id = data.get("sub_order_id")
-    if not order_id:
-        await state.set_state(Funnel.welcome)
-        await message.answer(msg.WELCOME, reply_markup=kb.kb_welcome(), parse_mode="Markdown")
-        return
-
-    await db.add_subscription(
-        chat_id=message.from_user.id,
-        platform="telegram",
-        order_id=order_id,
-        email=email,
-    )
-    await state.set_state(Funnel.welcome)
-    await message.answer(
-        f"✅ *Подписка оформлена!*\n\n"
-        f"Я буду уведомлять тебя о смене статуса заказа *#{order_id}* 🚀\n\n"
-        f"Чтобы отписаться: `/unsubscribe {order_id}`",
-        parse_mode="Markdown"
-    )
 
 
 @router.message(Command("help"))

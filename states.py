@@ -11,6 +11,7 @@ class Funnel(StatesGroup):
     get_name = State()
     get_phone = State()
     completed = State()
+    subscribe_email = State()
 
 
 class Reminder(StatesGroup):

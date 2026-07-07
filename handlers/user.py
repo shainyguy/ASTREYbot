@@ -45,6 +45,76 @@ async def cmd_help(message: Message):
     )
 
 
+@router.message(Command("subscribe"))
+async def cmd_subscribe(message: Message):
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer(
+            "📋 *Подписка на уведомления о заказе*\n\n"
+            "Чтобы получать уведомления о смене статуса, отправь:\n"
+            "`/subscribe НОМЕР_ЗАКАЗА EMAIL`\n\n"
+            "Например: `/subscribe 42 ivan@example.com`\n\n"
+            "Номер заказа и email — в письме после оформления 🚀",
+            parse_mode="Markdown"
+        )
+        return
+
+    order_id = args[1].strip()
+    email = args[2].strip()
+
+    if not order_id.isdigit():
+        await message.answer("❌ Номер заказа должен быть числом")
+        return
+
+    if "@" not in email:
+        await message.answer("❌ Введите корректный email")
+        return
+
+    await db.add_subscription(
+        chat_id=message.from_user.id,
+        platform="telegram",
+        order_id=int(order_id),
+        email=email,
+    )
+    await message.answer(
+        f"✅ *Подписка оформлена!*\n\n"
+        f"Я буду уведомлять тебя о смене статуса заказа *#{order_id}*.\n"
+        f"Как только статус изменится — сразу напишу 🚀\n\n"
+        f"Чтобы отписаться: `/unsubscribe {order_id}`",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(Command("unsubscribe"))
+async def cmd_unsubscribe(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "📋 *Отписка от уведомлений*\n\n"
+            "Чтобы отписаться от заказа: `/unsubscribe НОМЕР_ЗАКАЗА`\n"
+            "Например: `/unsubscribe 42`",
+            parse_mode="Markdown"
+        )
+        return
+
+    order_id = args[1].strip()
+    if not order_id.isdigit():
+        await message.answer("❌ Номер заказа должен быть числом")
+        return
+
+    await db.remove_subscription(message.from_user.id, int(order_id))
+    user_subs = await db.get_user_subscriptions(message.from_user.id)
+    subs_count = len(user_subs)
+
+    reply = f"✅ Отписка от заказа *#{order_id}* оформлена.\n"
+    if subs_count > 0:
+        reply += f"У тебя осталось подписок: {subs_count}"
+    else:
+        reply += "У тебя больше нет активных подписок."
+
+    await message.answer(reply, parse_mode="Markdown")
+
+
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, state: FSMContext):
     await state.set_state(Funnel.welcome)

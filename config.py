@@ -24,6 +24,8 @@ ADMIN_VK_IDS: List[int] = [
 ]
 
 WEBSITE_URL: str = "https://astreys.ru"
+HTTP_PORT: int = int(os.getenv("PORT", "8080"))
+BOT_API_SECRET: str = os.getenv("BOT_API_SECRET", "")
 
 AI_CONFUSION_THRESHOLD: int = 3
 MAX_HISTORY_MESSAGES: int = 12

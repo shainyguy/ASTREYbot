@@ -94,6 +94,14 @@ async def main():
     tasks.append(inactivity.run_inactivity_monitor())
     tasks.append(reminder_scheduler.run_reminder_scheduler())
 
+    # ── HTTP API сервер ──
+    if config.BOT_API_SECRET:
+        from http_api import run_http_server
+        tasks.append(run_http_server())
+        logger.info("HTTP API: enabled")
+    else:
+        logger.warning("BOT_API_SECRET not set — HTTP API disabled")
+
     # ── Запуск VK бота ──
     if vk_enabled:
         from vk_bot.bot import run_vk_bot

@@ -20,4 +20,6 @@ RUN mkdir -p /data
 ENV DATABASE_PATH=/data/astreybot.db
 ENV PYTHONPATH=/app
 
+EXPOSE 8080
+
 CMD ["python", "main.py"]

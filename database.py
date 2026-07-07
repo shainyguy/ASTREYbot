@@ -79,6 +79,16 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                platform TEXT DEFAULT 'telegram',
+                order_id INTEGER NOT NULL,
+                email TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(chat_id, order_id)
+            );
+
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER NOT NULL,
@@ -403,3 +413,60 @@ async def end_takeover(admin_id: int, user_id: int) -> None:
             (admin_id, user_id)
         )
         await db.commit()
+
+
+# ─────────────────────────────────────────────
+#  SUBSCRIPTIONS (заказ → chat_id)
+# ─────────────────────────────────────────────
+
+async def add_subscription(chat_id: int, platform: str, order_id: int, email: str = None) -> None:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO subscriptions (chat_id, platform, order_id, email)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id, order_id) DO UPDATE SET
+                platform = excluded.platform,
+                email = COALESCE(excluded.email, email)
+        """, (chat_id, platform, order_id, email))
+        await db.commit()
+
+
+async def remove_subscription(chat_id: int, order_id: int) -> None:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM subscriptions WHERE chat_id = ? AND order_id = ?",
+            (chat_id, order_id)
+        )
+        await db.commit()
+
+
+async def get_subscribers(order_id: int) -> list[dict]:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT chat_id, platform, email FROM subscriptions WHERE order_id = ?",
+            (order_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_all_subscribers() -> list[dict]:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT DISTINCT chat_id, platform FROM subscriptions"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_user_subscriptions(chat_id: int) -> list[dict]:
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM subscriptions WHERE chat_id = ? ORDER BY created_at DESC",
+            (chat_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]

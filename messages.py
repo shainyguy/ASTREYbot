@@ -293,6 +293,23 @@ TAKEOVER_USER_NOTIFY = """👨‍💼 *С вами связался менедж
 
 Задавайте любые вопросы — он ответит лично 😊"""
 
+ORDER_STATUS_CHANGE = """{emoji} *Статус заказа #{order_id} изменился!*
+
+{description}
+
+{items}
+
+🔗 [Отследить на сайте]({tracking_url})"""
+
+SUBSCRIBE_INFO = """💬 *Хочешь получать уведомления о статусе заказа?*
+
+Напиши боту команду:
+`/subscribe НОМЕР_ЗАКАЗА EMAIL`
+
+Например: `/subscribe 42 ivan@example.com`
+
+Я пришлю сообщение, как только статус изменится 🚀"""
+
 NEED_HELP_NOTIFY = """🆘 *Пользователю нужна помощь!*
 
 👤 {name} (@{username}) | ID: `{user_id}`

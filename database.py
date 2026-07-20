@@ -1,14 +1,17 @@
 import os
 import json
+import re
+import asyncio
 from typing import Optional, List, Dict, Any
 
 
 class Database:
-    """Простая обёртка над SQLite, с возможностью переключения на PostgreSQL."""
+    """Простая обёртка над SQLite / PostgreSQL с поддержкой конкурентного доступа."""
     def __init__(self):
         self._conn = None
         self._is_pg = False
         self._path = ""
+        self._lock = asyncio.Lock()
 
     async def connect(self, path_or_url: str):
         self._path = path_or_url
@@ -48,14 +51,16 @@ class Database:
         q = self._convert_query(query)
         v = self._vals(params)
         if self._is_pg:
-            return await self._conn.execute(q, *v)
+            async with self._lock:
+                return await self._conn.execute(q, *v)
         else:
             return await self._conn.execute(q, v if v else None)
 
     async def executemany(self, query: str, params_list: list):
         q = self._convert_query(query)
         if self._is_pg:
-            return await self._conn.executemany(q, [list(p.values()) for p in params_list])
+            async with self._lock:
+                return await self._conn.executemany(q, [list(p.values()) for p in params_list])
         else:
             return await self._conn.executemany(q, [tuple(p.values()) for p in params_list])
 
@@ -63,8 +68,9 @@ class Database:
         q = self._convert_query(query)
         v = self._vals(params)
         if self._is_pg:
-            row = await self._conn.fetchrow(q, *v)
-            return dict(row) if row else None
+            async with self._lock:
+                row = await self._conn.fetchrow(q, *v)
+                return dict(row) if row else None
         else:
             async with self._conn.execute(q, v if v else ()) as c:
                 row = await c.fetchone()
@@ -74,8 +80,9 @@ class Database:
         q = self._convert_query(query)
         v = self._vals(params)
         if self._is_pg:
-            rows = await self._conn.fetch(q, *v)
-            return [dict(r) for r in rows]
+            async with self._lock:
+                rows = await self._conn.fetch(q, *v)
+                return [dict(r) for r in rows]
         else:
             async with self._conn.execute(q, v if v else ()) as c:
                 rows = await c.fetchall()

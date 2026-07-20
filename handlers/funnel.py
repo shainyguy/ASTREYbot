@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import base64
+import re
 from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InputMediaPhoto
@@ -631,7 +632,7 @@ async def _notify_admin_needs_help(bot: Bot, user_id: int, last_message: str, co
         name=name,
         username=username,
         user_id=user_id,
-        last_message=last_message[:200],
+        last_message=escape_md(last_message[:200]),
         count=count,
     )
     for admin_id in ADMIN_IDS:
@@ -785,3 +786,8 @@ async def cb_del_reminder(call: CallbackQuery, state: FSMContext):
         "🗑 Напоминание удалено.",
         reply_markup=kb.kb_reminder_saved()
     )
+
+
+def escape_md(text: str) -> str:
+    """Экранирует Markdown-спецсимволы в тексте от пользователя."""
+    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", r"\\\1", text)

@@ -330,15 +330,22 @@ def _returning_id() -> str:
 #  USERS
 # ─────────────────────────────────────────────
 
+def _t() -> str:
+    if _DB and _DB.is_pg:
+        return "users."
+    return ""
+
+
 async def upsert_user(telegram_id: int, username: str = None, first_name: str = None,
                       last_name: str = None, platform: str = "telegram") -> None:
+    t = _t()
     await _DB.execute(
         "INSERT INTO users (telegram_id, username, first_name, last_name, platform) "
         "VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(telegram_id) DO UPDATE SET "
-        "username = COALESCE(excluded.username, username), "
-        "first_name = COALESCE(excluded.first_name, first_name), "
-        "last_name = COALESCE(excluded.last_name, last_name), "
+        f"username = COALESCE(excluded.username, {t}username), "
+        f"first_name = COALESCE(excluded.first_name, {t}first_name), "
+        f"last_name = COALESCE(excluded.last_name, {t}last_name), "
         f"updated_at = {_now()}",
         {"1": telegram_id, "2": username, "3": first_name, "4": last_name, "5": platform}
     )

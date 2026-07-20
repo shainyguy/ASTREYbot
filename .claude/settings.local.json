@@ -11,7 +11,15 @@
       "WebFetch(domain:vk.com)",
       "Bash(python -m py_compile notifier.py config.py database.py main.py vk_bot/states.py vk_bot/keyboards.py vk_bot/funnel.py vk_bot/bot.py)",
       "Bash(python -m py_compile vk_bot/api.py vk_bot/longpoll.py vk_bot/bot.py vk_bot/funnel.py vk_bot/states.py vk_bot/keyboards.py main.py notifier.py)",
-      "Bash(python -m py_compile vk_bot/bot.py main.py)"
+      "Bash(python -m py_compile vk_bot/bot.py main.py)",
+      "Bash(python -m py_compile database.py)",
+      "Bash(python -m py_compile keyboards.py)",
+      "Bash(python -m py_compile handlers/funnel.py)",
+      "Bash(python -m py_compile vk_bot/keyboards.py)",
+      "Bash(python -m py_compile vk_bot/states.py)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

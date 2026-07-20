@@ -1,121 +1,121 @@
-import aiosqlite
 import os
+import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from databases import Database
 
-
+_DB: Database = None
 _DB_PATH: str = ""
+
+
+def get_db() -> Database:
+    return _DB
 
 
 def set_db_path(path: str):
     global _DB_PATH
     _DB_PATH = path
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
 
 
 async def init_db():
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        await db.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER UNIQUE NOT NULL,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                full_name TEXT,
-                phone TEXT,
-                stage TEXT DEFAULT 'welcome',
-                occasion TEXT,
-                recipient TEXT,
-                budget TEXT,
-                product_interest TEXT,
-                ai_confusion_count INTEGER DEFAULT 0,
-                admin_authorized INTEGER DEFAULT 0,
-                notes TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
-            );
+    global _DB
+    db_url = os.environ.get("DATABASE_URL") or f"sqlite:///{_DB_PATH}"
+    _DB = Database(db_url)
+    await _DB.connect()
 
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER NOT NULL,
-                direction TEXT NOT NULL,
-                text TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id BIGINT UNIQUE NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            full_name TEXT,
+            phone TEXT,
+            stage TEXT DEFAULT 'welcome',
+            occasion TEXT,
+            recipient TEXT,
+            budget TEXT,
+            product_interest TEXT,
+            ai_confusion_count INTEGER DEFAULT 0,
+            admin_authorized INTEGER DEFAULT 0,
+            notes TEXT,
+            platform TEXT DEFAULT 'telegram',
+            last_bot_message_at TEXT,
+            inactivity_notified INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )
+    """)
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id BIGINT NOT NULL,
+            direction TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )
+    """)
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id BIGINT NOT NULL,
+            stage TEXT NOT NULL,
+            occasion TEXT,
+            recipient TEXT,
+            budget TEXT,
+            product_interest TEXT,
+            full_name TEXT,
+            username TEXT,
+            phone TEXT,
+            status TEXT DEFAULT 'new',
+            notes TEXT,
+            admin_notes TEXT,
+            platform TEXT DEFAULT 'telegram',
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )
+    """)
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS admin_takeovers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            started_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            ended_at TEXT
+        )
+    """)
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id BIGINT NOT NULL,
+            text TEXT NOT NULL,
+            sent_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )
+    """)
+    await _DB.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id BIGINT NOT NULL,
+            platform TEXT NOT NULL,
+            order_id INTEGER NOT NULL,
+            email TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )
+    """)
 
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER NOT NULL,
-                stage TEXT NOT NULL,
-                occasion TEXT,
-                recipient TEXT,
-                budget TEXT,
-                product_interest TEXT,
-                full_name TEXT,
-                username TEXT,
-                phone TEXT,
-                status TEXT DEFAULT 'new',
-                notes TEXT,
-                admin_notes TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS admin_takeovers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                admin_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                started_at TEXT DEFAULT (datetime('now')),
-                ended_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS broadcasts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                admin_id INTEGER NOT NULL,
-                text TEXT NOT NULL,
-                sent_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER NOT NULL,
-                platform TEXT DEFAULT 'telegram',
-                order_id INTEGER NOT NULL,
-                email TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                UNIQUE(chat_id, order_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS reminders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER NOT NULL,
-                platform TEXT DEFAULT 'telegram',
-                event_name TEXT NOT NULL,
-                event_date TEXT NOT NULL,
-                remind_days_before INTEGER DEFAULT 3,
-                reminded_years TEXT DEFAULT '',
-                is_active INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-        """)
-        await db.commit()
-
-    # Миграция для существующих БД
-    async with aiosqlite.connect(_DB_PATH) as db:
-        for stmt in [
-            "ALTER TABLE users ADD COLUMN platform TEXT DEFAULT 'telegram'",
-            "ALTER TABLE leads ADD COLUMN platform TEXT DEFAULT 'telegram'",
-            "ALTER TABLE users ADD COLUMN last_bot_message_at TEXT",
-            "ALTER TABLE users ADD COLUMN inactivity_notified INTEGER DEFAULT 0",
-        ]:
-            try:
-                await db.execute(stmt)
-                await db.commit()
-            except Exception:
-                pass  # Колонка уже существует
+    # Миграции для старых колонок
+    for col in ["platform", "last_bot_message_at", "inactivity_notified"]:
+        try:
+            await _DB.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+        except Exception:
+            pass
+    try:
+        await _DB.execute("ALTER TABLE leads ADD COLUMN platform TEXT DEFAULT 'telegram'")
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────
@@ -124,56 +124,43 @@ async def init_db():
 
 async def upsert_user(telegram_id: int, username: str = None, first_name: str = None,
                       last_name: str = None, platform: str = "telegram") -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO users (telegram_id, username, first_name, last_name, platform)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(telegram_id) DO UPDATE SET
-                username = COALESCE(excluded.username, username),
-                first_name = COALESCE(excluded.first_name, first_name),
-                last_name = COALESCE(excluded.last_name, last_name),
-                updated_at = datetime('now')
-        """, (telegram_id, username, first_name, last_name, platform))
-        await db.commit()
-
-
-async def update_last_bot_message(telegram_id: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET last_bot_message_at = datetime('now'), inactivity_notified = 0 WHERE telegram_id = ?",
-            (telegram_id,)
-        )
-        await db.commit()
+    await _DB.execute("""
+        INSERT INTO users (telegram_id, username, first_name, last_name, platform)
+        VALUES (:tid, :un, :fn, :ln, :pl)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+            username = COALESCE(excluded.username, username),
+            first_name = COALESCE(excluded.first_name, first_name),
+            last_name = COALESCE(excluded.last_name, last_name),
+            updated_at = CURRENT_TIMESTAMP
+    """, {"tid": telegram_id, "un": username, "fn": first_name, "ln": last_name, "pl": platform})
 
 
 async def get_user(telegram_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    row = await _DB.fetch_one("SELECT * FROM users WHERE telegram_id = :tid", {"tid": telegram_id})
+    return dict(row) if row else None
 
 
 async def update_user(telegram_id: int, **kwargs) -> None:
     if not kwargs:
         return
-    fields = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [telegram_id]
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            f"UPDATE users SET {fields}, updated_at = datetime('now') WHERE telegram_id = ?",
-            values
-        )
-        await db.commit()
+    kwargs["tid"] = telegram_id
+    fields = ", ".join(f"{k} = :{k}" for k in kwargs if k != "tid")
+    await _DB.execute(
+        f"UPDATE users SET {fields}, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = :tid",
+        kwargs
+    )
 
 
 async def get_all_user_ids() -> List[int]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        async with db.execute("SELECT telegram_id FROM users") as cursor:
-            rows = await cursor.fetchall()
-            return [r[0] for r in rows]
+    rows = await _DB.fetch_all("SELECT telegram_id FROM users")
+    return [r["telegram_id"] for r in rows]
+
+
+async def update_last_bot_message(telegram_id: int) -> None:
+    await _DB.execute(
+        "UPDATE users SET last_bot_message_at = CURRENT_TIMESTAMP, inactivity_notified = 0 WHERE telegram_id = :tid",
+        {"tid": telegram_id}
+    )
 
 
 # ─────────────────────────────────────────────
@@ -181,23 +168,18 @@ async def get_all_user_ids() -> List[int]:
 # ─────────────────────────────────────────────
 
 async def log_message(telegram_id: int, direction: str, text: str) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO messages (telegram_id, direction, text) VALUES (?, ?, ?)",
-            (telegram_id, direction, text[:4000])
-        )
-        await db.commit()
+    await _DB.execute(
+        "INSERT INTO messages (telegram_id, direction, text) VALUES (:tid, :dir, :txt)",
+        {"tid": telegram_id, "dir": direction, "txt": text[:4000]}
+    )
 
 
 async def get_user_messages(telegram_id: int, limit: int = 20) -> List[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM messages WHERE telegram_id = ? ORDER BY created_at DESC LIMIT ?",
-            (telegram_id, limit)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in reversed(rows)]
+    rows = await _DB.fetch_all(
+        "SELECT * FROM messages WHERE telegram_id = :tid ORDER BY created_at DESC LIMIT :lim",
+        {"tid": telegram_id, "lim": limit}
+    )
+    return [dict(r) for r in reversed(rows)]
 
 
 # ─────────────────────────────────────────────
@@ -205,181 +187,90 @@ async def get_user_messages(telegram_id: int, limit: int = 20) -> List[Dict]:
 # ─────────────────────────────────────────────
 
 async def upsert_lead(telegram_id: int, **kwargs) -> int:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id FROM leads WHERE telegram_id = ? AND status NOT IN ('converted', 'lost')",
-            (telegram_id,)
-        ) as cursor:
-            existing = await cursor.fetchone()
-
-        if existing:
-            lead_id = existing[0]
-            if kwargs:
-                fields = ", ".join(f"{k} = ?" for k in kwargs)
-                values = list(kwargs.values()) + [lead_id]
-                await db.execute(
-                    f"UPDATE leads SET {fields}, updated_at = datetime('now') WHERE id = ?",
-                    values
-                )
-        else:
-            kwargs["telegram_id"] = telegram_id
-            kwargs.setdefault("stage", "started")
-            cols = ", ".join(kwargs.keys())
-            placeholders = ", ".join("?" * len(kwargs))
-            async with db.execute(
-                f"INSERT INTO leads ({cols}) VALUES ({placeholders})",
-                list(kwargs.values())
-            ) as cursor:
-                lead_id = cursor.lastrowid
-
-        await db.commit()
+    existing = await _DB.fetch_one(
+        "SELECT id FROM leads WHERE telegram_id = :tid AND status NOT IN ('converted', 'lost')",
+        {"tid": telegram_id}
+    )
+    if existing:
+        lead_id = existing["id"]
+        if kwargs:
+            kwargs["lid"] = lead_id
+            fields = ", ".join(f"{k} = :{k}" for k in kwargs if k != "lid")
+            await _DB.execute(
+                f"UPDATE leads SET {fields}, updated_at = CURRENT_TIMESTAMP WHERE id = :lid",
+                kwargs
+            )
         return lead_id
+
+    kwargs["telegram_id"] = telegram_id
+    kwargs.setdefault("stage", "started")
+    cols = ", ".join(kwargs.keys())
+    params = ", ".join(f":{k}" for k in kwargs)
+    row = await _DB.fetch_one(
+        f"INSERT INTO leads ({cols}) VALUES ({params}) RETURNING id",
+        kwargs
+    )
+    return row["id"]
 
 
 async def get_lead(lead_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    row = await _DB.fetch_one("SELECT * FROM leads WHERE id = :lid", {"lid": lead_id})
+    return dict(row) if row else None
 
 
 async def get_user_lead(telegram_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM leads WHERE telegram_id = ? ORDER BY created_at DESC LIMIT 1",
-            (telegram_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    row = await _DB.fetch_one(
+        "SELECT * FROM leads WHERE telegram_id = :tid ORDER BY created_at DESC LIMIT 1",
+        {"tid": telegram_id}
+    )
+    return dict(row) if row else None
 
 
 async def update_lead_status(lead_id: int, status: str) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE leads SET status = ?, updated_at = datetime('now') WHERE id = ?",
-            (status, lead_id)
-        )
-        await db.commit()
+    await _DB.execute(
+        "UPDATE leads SET status = :st, updated_at = CURRENT_TIMESTAMP WHERE id = :lid",
+        {"st": status, "lid": lead_id}
+    )
 
 
 async def update_lead_notes(lead_id: int, notes: str) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE leads SET admin_notes = ?, updated_at = datetime('now') WHERE id = ?",
-            (notes, lead_id)
-        )
-        await db.commit()
+    await _DB.execute(
+        "UPDATE leads SET admin_notes = :nt, updated_at = CURRENT_TIMESTAMP WHERE id = :lid",
+        {"nt": notes, "lid": lead_id}
+    )
 
 
 async def get_leads(status: str = None, page: int = 0, per_page: int = 10) -> List[Dict]:
     offset = page * per_page
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        if status and status != "all":
-            async with db.execute(
-                "SELECT * FROM leads WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (status, per_page, offset)
-            ) as cursor:
-                rows = await cursor.fetchall()
-        else:
-            async with db.execute(
-                "SELECT * FROM leads ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (per_page, offset)
-            ) as cursor:
-                rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    if status and status != "all":
+        rows = await _DB.fetch_all(
+            "SELECT * FROM leads WHERE status = :st ORDER BY created_at DESC LIMIT :lim OFFSET :off",
+            {"st": status, "lim": per_page, "off": offset}
+        )
+    else:
+        rows = await _DB.fetch_all(
+            "SELECT * FROM leads ORDER BY created_at DESC LIMIT :lim OFFSET :off",
+            {"lim": per_page, "off": offset}
+        )
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────────
 #  STATISTICS
 # ─────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  REMINDERS
-# ─────────────────────────────────────────────
-
-async def add_reminder(telegram_id: int, platform: str, event_name: str,
-                       event_date: str, remind_days_before: int) -> int:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        cursor = await db.execute(
-            """INSERT INTO reminders (telegram_id, platform, event_name, event_date, remind_days_before)
-               VALUES (?, ?, ?, ?, ?)""",
-            (telegram_id, platform, event_name, event_date, remind_days_before)
-        )
-        await db.commit()
-        return cursor.lastrowid
-
-
-async def get_active_reminders() -> List[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM reminders WHERE is_active = 1"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-
-
-async def mark_reminder_sent(reminder_id: int, year: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT reminded_years FROM reminders WHERE id = ?", (reminder_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            years = row["reminded_years"] or ""
-            years_list = [y for y in years.split(",") if y]
-            if str(year) not in years_list:
-                years_list.append(str(year))
-            await db.execute(
-                "UPDATE reminders SET reminded_years = ? WHERE id = ?",
-                (",".join(years_list), reminder_id)
-            )
-            await db.commit()
-
-
-async def get_user_reminders(telegram_id: int) -> List[Dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM reminders WHERE telegram_id = ? AND is_active = 1 ORDER BY created_at DESC",
-            (telegram_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-
-
-async def deactivate_reminder(reminder_id: int, telegram_id: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE reminders SET is_active = 0 WHERE id = ? AND telegram_id = ?",
-            (reminder_id, telegram_id)
-        )
-        await db.commit()
-
-
 async def get_stats() -> Dict[str, Any]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as c:
-            total_users = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*) FROM users WHERE created_at >= date('now')"
-        ) as c:
-            today_users = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*) FROM leads WHERE created_at >= date('now')"
-        ) as c:
-            today_leads = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*) FROM leads WHERE phone IS NOT NULL AND phone != ''"
-        ) as c:
-            conversions = (await c.fetchone())[0]
-        async with db.execute("SELECT COUNT(*) FROM leads") as c:
-            total_leads = (await c.fetchone())[0]
+    total_users = (await _DB.fetch_one("SELECT COUNT(*) as c FROM users"))["c"]
+    today_users = (await _DB.fetch_one(
+        "SELECT COUNT(*) as c FROM users WHERE created_at >= CURRENT_DATE"
+    ))["c"]
+    today_leads = (await _DB.fetch_one(
+        "SELECT COUNT(*) as c FROM leads WHERE created_at >= CURRENT_DATE"
+    ))["c"]
+    conversions = (await _DB.fetch_one(
+        "SELECT COUNT(*) as c FROM leads WHERE phone IS NOT NULL AND phone != ''"
+    ))["c"]
+    total_leads = (await _DB.fetch_one("SELECT COUNT(*) as c FROM leads"))["c"]
 
     conv_rate = round(conversions / total_leads * 100, 1) if total_leads > 0 else 0
     return {
@@ -397,76 +288,77 @@ async def get_stats() -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 
 async def start_takeover(admin_id: int, user_id: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO admin_takeovers (admin_id, user_id) VALUES (?, ?)",
-            (admin_id, user_id)
-        )
-        await db.commit()
+    await _DB.execute(
+        "INSERT INTO admin_takeovers (admin_id, user_id) VALUES (:aid, :uid)",
+        {"aid": admin_id, "uid": user_id}
+    )
 
 
 async def end_takeover(admin_id: int, user_id: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            """UPDATE admin_takeovers SET ended_at = datetime('now')
-               WHERE admin_id = ? AND user_id = ? AND ended_at IS NULL""",
-            (admin_id, user_id)
-        )
-        await db.commit()
+    await _DB.execute(
+        "UPDATE admin_takeovers SET ended_at = CURRENT_TIMESTAMP WHERE admin_id = :aid AND user_id = :uid AND ended_at IS NULL",
+        {"aid": admin_id, "uid": user_id}
+    )
 
 
 # ─────────────────────────────────────────────
-#  SUBSCRIPTIONS (заказ → chat_id)
+#  SUBSCRIPTIONS
 # ─────────────────────────────────────────────
 
 async def add_subscription(chat_id: int, platform: str, order_id: int, email: str = None) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO subscriptions (chat_id, platform, order_id, email)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(chat_id, order_id) DO UPDATE SET
-                platform = excluded.platform,
-                email = COALESCE(excluded.email, email)
-        """, (chat_id, platform, order_id, email))
-        await db.commit()
+    await _DB.execute(
+        "INSERT INTO subscriptions (chat_id, platform, order_id, email) VALUES (:cid, :pl, :oid, :em)",
+        {"cid": chat_id, "pl": platform, "oid": order_id, "em": email}
+    )
 
 
 async def remove_subscription(chat_id: int, order_id: int) -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "DELETE FROM subscriptions WHERE chat_id = ? AND order_id = ?",
-            (chat_id, order_id)
-        )
-        await db.commit()
+    await _DB.execute(
+        "DELETE FROM subscriptions WHERE chat_id = :cid AND order_id = :oid",
+        {"cid": chat_id, "oid": order_id}
+    )
 
 
-async def get_subscribers(order_id: int) -> list[dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT chat_id, platform, email FROM subscriptions WHERE order_id = ?",
-            (order_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+async def get_user_subscriptions(chat_id: int) -> List[Dict]:
+    rows = await _DB.fetch_all(
+        "SELECT * FROM subscriptions WHERE chat_id = :cid ORDER BY created_at DESC",
+        {"cid": chat_id}
+    )
+    return [dict(r) for r in rows]
 
 
-async def get_all_subscribers() -> list[dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT DISTINCT chat_id, platform FROM subscriptions"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+# ─────────────────────────────────────────────
+#  EXPORT / IMPORT (для переноса на PostgreSQL)
+# ─────────────────────────────────────────────
+
+DUMP_FILE = "astreybot_dump.json"
 
 
-async def get_user_subscriptions(chat_id: int) -> list[dict]:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM subscriptions WHERE chat_id = ? ORDER BY created_at DESC",
-            (chat_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+async def export_data() -> str:
+    data = {}
+    for table in ["users", "messages", "leads", "admin_takeovers", "broadcasts", "subscriptions"]:
+        rows = await _DB.fetch_all(f"SELECT * FROM {table}")
+        data[table] = [dict(r) for r in rows]
+    with open(DUMP_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    return DUMP_FILE
+
+
+async def import_data(dump_file: str = DUMP_FILE) -> int:
+    if not os.path.exists(dump_file):
+        return 0
+    with open(dump_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    total = 0
+    for table, rows in data.items():
+        if not rows:
+            continue
+        cols = ", ".join(rows[0].keys())
+        params = ", ".join(f":{k}" for k in rows[0])
+        for row in rows:
+            try:
+                await _DB.execute(f"INSERT INTO {table} ({cols}) VALUES ({params})", row)
+                total += 1
+            except Exception:
+                pass
+    return total

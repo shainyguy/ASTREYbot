@@ -148,30 +148,27 @@ async def msg_welcome_free(message: Message, state: FSMContext):
     text = message.text or ""
     await db.log_message(message.from_user.id, "incoming", text)
 
-    # Если пользователь уже в режиме менеджера — форвардим
     if message.from_user.id in user_takeovers:
         await forward_to_admin(message.bot, message.from_user.id, text)
         return
 
-    # Любой текст на приветственном экране — запускаем AI
+    # Сразу в AI-чат, не дублируем приветствие
     await state.set_state(Funnel.ai_chat)
-    await message.answer(msg.WELCOME, reply_markup=kb.kb_welcome(), parse_mode="Markdown")
+    from handlers.funnel import process_ai_message
+    await process_ai_message(message, state, message.bot)
 
 
-# Перехват всех сообщений пользователей, которых взял менеджер
 @router.message(F.text)
 async def catch_all_messages(message: Message, state: FSMContext):
     user_id = message.from_user.id
     current_state = await state.get_state()
 
-    # Если менеджер взял управление — форвардим
     if user_id in user_takeovers:
         await db.log_message(user_id, "incoming", message.text)
         forwarded = await forward_to_admin(message.bot, user_id, message.text)
         if forwarded:
             return
 
-    # Если состояние None или welcome — показываем меню
     if current_state is None:
         await db.upsert_user(
             telegram_id=user_id,
@@ -179,5 +176,6 @@ async def catch_all_messages(message: Message, state: FSMContext):
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
         )
-        await state.set_state(Funnel.welcome)
-        await message.answer(msg.WELCOME, reply_markup=kb.kb_welcome(), parse_mode="Markdown")
+        await state.set_state(Funnel.ai_chat)
+        from handlers.funnel import process_ai_message
+        await process_ai_message(message, state, message.bot)

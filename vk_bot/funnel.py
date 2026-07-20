@@ -24,13 +24,13 @@ async def _update_bot_msg_time(db_id: int) -> None:
     await db.update_last_bot_message(db_id)
 
 
-async def _maybe_ask_order_ready(vk_id: int, db_id: int, message: Message) -> None:
+async def _maybe_nudge_to_order(vk_id: int, db_id: int, message: Message) -> None:
+    """Подталкивает к заказу после КАЖДОГО ответа бота, чередуя вопросы."""
     count = _ai_message_count.get(vk_id, 0) + 1
     _ai_message_count[vk_id] = count
-    if count % 3 == 0:
-        nudge_idx = (count // 3 - 1) % len(msg.ORDER_NUDGES)
-        nudge_text = _strip_md(msg.ORDER_NUDGES[nudge_idx].format(url=WEBSITE_URL))
-        await _send(message, nudge_text, vk_kb.kb_ai_chat())
+    nudge_idx = (count - 1) % len(msg.ORDER_NUDGES)
+    nudge_text = _strip_md(msg.ORDER_NUDGES[nudge_idx].format(url=WEBSITE_URL))
+    await _send(message, nudge_text, vk_kb.kb_ai_chat())
 
 
 def vk_db_id(vk_id: int) -> int:
@@ -226,6 +226,7 @@ async def handle_message(message: Message) -> None:
     # ── По умолчанию ──
     if state == st.WELCOME:
         await _show_welcome(message, user_id, db_id)
+        st.set_state(user_id, st.AI_CHAT)  # Сразу переключаем в AI, чтобы след. сообщение не дублировало приветствие
     else:
         st.set_state(user_id, st.AI_CHAT)
         await _handle_ai(message, user_id, db_id, raw_text)
@@ -330,6 +331,7 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
         await db.log_message(db_id, "outgoing", faq)
         await _update_bot_msg_time(db_id)
         await _send(message, _strip_md(faq), vk_kb.kb_ai_chat())
+        await _maybe_nudge_to_order(user_id, db_id, message)
         return
 
     # AI
@@ -346,7 +348,7 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
         clean = _strip_md(ai_response)
         await db.log_message(db_id, "outgoing", clean)
         await _send(message, clean, vk_kb.kb_ai_chat())
-        await _maybe_ask_order_ready(user_id, db_id, message)
+        await _maybe_nudge_to_order(user_id, db_id, message)
 
         # После 6 сообщений предлагаем оставить контакт
         if len(gc.get_history(db_id)) >= 6:

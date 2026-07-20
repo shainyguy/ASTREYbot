@@ -25,17 +25,17 @@ async def _update_bot_msg_time(user_id: int) -> None:
     await db.update_last_bot_message(user_id)
 
 
-async def _maybe_ask_order_ready(user_id: int, state: FSMContext, message: Message) -> None:
+async def _maybe_nudge_to_order(user_id: int, message: Message) -> None:
+    """Подталкивает к заказу после КАЖДОГО ответа бота, чередуя вопросы."""
     count = _ai_message_count.get(user_id, 0) + 1
     _ai_message_count[user_id] = count
-    if count % 3 == 0:
-        nudge_idx = (count // 3 - 1) % len(msg.ORDER_NUDGES)
-        nudge_text = msg.ORDER_NUDGES[nudge_idx]
-        await message.answer(
-            nudge_text.format(url=WEBSITE_URL),
-            reply_markup=kb.kb_ai_chat(),
-            parse_mode="Markdown"
-        )
+    nudge_idx = (count - 1) % len(msg.ORDER_NUDGES)
+    nudge_text = msg.ORDER_NUDGES[nudge_idx]
+    await message.answer(
+        nudge_text.format(url=WEBSITE_URL),
+        reply_markup=kb.kb_ai_chat(),
+        parse_mode="Markdown"
+    )
 
 
 # ══════════════════════════════════════════════
@@ -258,29 +258,33 @@ def _recipient_line(recipient: str) -> str:
 
 @router.message(Funnel.ai_chat)
 async def msg_ai_chat(message: Message, state: FSMContext, bot: Bot):
+    await process_ai_message(message, state, bot)
+
+
+async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> bool:
+    """Общая логика AI-обработки для любого входящего сообщения."""
     user_id = message.from_user.id
     text = message.text or ""
 
     await db.log_message(user_id, "incoming", text)
 
-    # Проверяем — не в режиме ли передачи менеджеру
     user = await db.get_user(user_id)
     if user and user.get("stage") == "manager_takeover":
         from handlers.admin import forward_to_admin, user_takeovers
         if user_id in user_takeovers:
             await forward_to_admin(bot, user_id, text)
-        return
+        return False
 
-    await message.bot.send_chat_action(message.chat.id, "typing")
+    await bot.send_chat_action(message.chat.id, "typing")
 
-    # FAQ быстрые ответы
     faq_answer = _check_faq(text)
     if faq_answer:
         await db.log_message(user_id, "outgoing", faq_answer)
         await message.answer(faq_answer, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
-        return
+        await _update_bot_msg_time(user_id)
+        await _maybe_nudge_to_order(user_id, message)
+        return True
 
-    # AI ответ
     history = gc.get_history(user_id)
     ai_response = ""
 
@@ -295,15 +299,13 @@ async def msg_ai_chat(message: Message, state: FSMContext, bot: Bot):
 
         await db.log_message(user_id, "outgoing", ai_response)
         await message.answer(ai_response, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
-        await _maybe_ask_order_ready(user_id, state, message)
+        await _maybe_nudge_to_order(user_id, message)
 
-        # После 3 AI ответов — предлагаем оставить контакт
         history_len = len(gc.get_history(user_id))
         if history_len >= 6 and user and not user.get("full_name"):
             await state.set_state(Funnel.get_name)
             await message.answer(msg.GET_NAME, parse_mode="Markdown")
     else:
-        # AI не ответил — увеличиваем счётчик и уведомляем
         confusion = (user.get("ai_confusion_count") or 0) + 1 if user else 1
         await db.update_user(user_id, ai_confusion_count=confusion)
 
@@ -313,6 +315,7 @@ async def msg_ai_chat(message: Message, state: FSMContext, bot: Bot):
             await message.answer(msg.MANAGER_CONNECTED, parse_mode="Markdown")
         else:
             await message.answer(msg.FALLBACK_AI, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
+    return True
 
 
 def _check_faq(text: str) -> str:

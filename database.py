@@ -195,6 +195,19 @@ async def init_db():
                 created_at TEXT DEFAULT NOW()
             )
         """)
+        await _DB.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL,
+                platform TEXT DEFAULT 'telegram',
+                event_name TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                remind_days_before INTEGER DEFAULT 3,
+                reminded_years TEXT DEFAULT '',
+                active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT NOW()
+            )
+        """)
     else:
         # SQLite синтаксис
         await _DB.execute_script("""
@@ -265,6 +278,17 @@ async def init_db():
                 platform TEXT NOT NULL,
                 order_id INTEGER NOT NULL,
                 email TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                platform TEXT DEFAULT 'telegram',
+                event_name TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                remind_days_before INTEGER DEFAULT 3,
+                reminded_years TEXT DEFAULT '',
+                active INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT (datetime('now'))
             );
         """)
@@ -519,6 +543,65 @@ async def get_user_subscriptions(chat_id: int) -> List[Dict]:
     return await _DB.fetch_all(
         "SELECT * FROM subscriptions WHERE chat_id = ? ORDER BY created_at DESC",
         {"1": chat_id}
+    )
+
+
+async def get_subscribers(order_id: int) -> List[Dict]:
+    return await _DB.fetch_all(
+        "SELECT * FROM subscriptions WHERE order_id = ? ORDER BY created_at DESC",
+        {"1": order_id}
+    )
+
+
+async def get_all_subscribers() -> List[Dict]:
+    return await _DB.fetch_all(
+        "SELECT * FROM subscriptions ORDER BY created_at DESC"
+    )
+
+
+# ─────────────────────────────────────────────
+#  REMINDERS
+# ─────────────────────────────────────────────
+
+async def add_reminder(telegram_id: int, platform: str, event_name: str, event_date: str, remind_days_before: int) -> None:
+    await _DB.execute(
+        "INSERT INTO reminders (telegram_id, platform, event_name, event_date, remind_days_before) VALUES (?, ?, ?, ?, ?)",
+        {"1": telegram_id, "2": platform, "3": event_name, "4": event_date, "5": remind_days_before}
+    )
+
+
+async def get_user_reminders(telegram_id: int) -> List[Dict]:
+    return await _DB.fetch_all(
+        "SELECT * FROM reminders WHERE telegram_id = ? AND active = 1 ORDER BY created_at DESC",
+        {"1": telegram_id}
+    )
+
+
+async def deactivate_reminder(reminder_id: int, telegram_id: int) -> None:
+    await _DB.execute(
+        "UPDATE reminders SET active = 0 WHERE id = ? AND telegram_id = ?",
+        {"1": reminder_id, "2": telegram_id}
+    )
+
+
+async def get_active_reminders() -> List[Dict]:
+    return await _DB.fetch_all(
+        "SELECT * FROM reminders WHERE active = 1"
+    )
+
+
+async def mark_reminder_sent(reminder_id: int, year: int) -> None:
+    reminder = await _DB.fetch_one("SELECT reminded_years FROM reminders WHERE id = ?", {"1": reminder_id})
+    if not reminder:
+        return
+    years = reminder.get("reminded_years") or ""
+    if years:
+        years += f",{year}"
+    else:
+        years = str(year)
+    await _DB.execute(
+        "UPDATE reminders SET reminded_years = ? WHERE id = ?",
+        {"1": years, "2": reminder_id}
     )
 
 

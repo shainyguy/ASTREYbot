@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import json
 import ssl
+import base64
 import time
 import logging
 from typing import Optional, List, Dict
@@ -155,6 +156,63 @@ class GigaChatClient:
             return ""
         except Exception as e:
             logger.error(f"GigaChat error: {e}")
+            return ""
+
+    async def chat_with_vision(
+        self,
+        history: List[Dict[str, str]],
+        user_message: str,
+        image_base64: str,
+        temperature: float = 0.7,
+    ) -> str:
+        try:
+            token = await self._get_token()
+        except Exception as e:
+            logger.error(f"GigaChat token error: {e}")
+            return ""
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history[-10:])
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_message or "Что на этом фото? Как это связано с подарками?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]
+        })
+
+        payload = {
+            "model": "GigaChat",
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 512,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.API_URL,
+                    headers=headers,
+                    json=payload,
+                    ssl=self._ssl_ctx,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"GigaChat vision API error {resp.status}: {text}")
+                        return ""
+                    result = await resp.json()
+                    return result["choices"][0]["message"]["content"].strip()
+        except asyncio.TimeoutError:
+            logger.error("GigaChat vision timeout")
+            return ""
+        except Exception as e:
+            logger.error(f"GigaChat vision error: {e}")
             return ""
 
 

@@ -1,0 +1,31 @@
+﻿python : 2026-07-20 15:29:21,433 [INFO] __main__: Database: /data/astreybot.db
+строка:1 знак:60
++ ... YTHONIOENCODING='utf-8'; Set-Location $p; python main.py 2>&1 | Out-F ...
++                                               ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-07-20 15:2...ta/astreybot.db:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-07-20 15:29:21,512 [INFO] __main__: GigaChat: initialized
+2026-07-20 15:29:21,806 [INFO] __main__: VK bot: ready
+2026-07-20 15:29:22,677 [INFO] __main__: HTTP API: enabled
+2026-07-20 15:29:22,693 [INFO] __main__: Starting 5 task(s)...
+2026-07-20 15:29:22,694 [INFO] aiogram.dispatcher: Start polling
+2026-07-20 15:29:22,694 [INFO] reminder_scheduler: Reminder scheduler started
+2026-07-20 15:29:22,694 [ERROR] reminder_scheduler: Reminder scheduler error: module 'database' has no attribute 'get_a
+ctive_reminders'
+2026-07-20 15:29:22,698 [INFO] http_api: HTTP API server started on port 8080
+2026-07-20 15:29:22,795 [INFO] aiogram.dispatcher: Run polling for bot @astreys_bot id=8906455677 - '╨Р╨б╨в╨а╨Х╨Щ - ╨Ь╨
+░╨│╨░╨╖╨╕╨╜ ╨┐╨╡╤А╤Б╨╛╨╜╨░╨╗╨╕╨╖╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╤Е ╨┐╨╛╨┤╨░╤А╨║╨╛╨▓'
+2026-07-20 15:29:24,302 [ERROR] vk_bot.api: resolveScreenName error: Cannot connect to host api.vk.com:443 ssl:True [SS
+LCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer cer
+tificate (_ssl.c:1010)')]
+2026-07-20 15:29:24,302 [ERROR] vk_bot.bot: ╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╨╛╨┐╤А╨╡╨┤╨╡╨╗╨╕╤В╤М VK_GROUP_ID тАФ VK ╨▒╨╛╤В ╨╜╨╡ ╨╖╨
+░╨┐╤Г╤Й╨╡╨╜
+2026-07-20 15:29:27,124 [ERROR] aiogram.dispatcher: Failed to fetch updates - TelegramConflictError: Telegram server sa
+ys - Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+2026-07-20 15:29:27,124 [WARNING] aiogram.dispatcher: Sleep for 1.000000 seconds and try again... (tryings = 0, bot id 
+= 8906455677)
+2026-07-20 15:29:32,860 [ERROR] aiogram.dispatcher: Failed to fetch updates - TelegramConflictError: Telegram server sa
+ys - Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+2026-07-20 15:29:32,860 [WARNING] aiogram.dispatcher: Sleep for 1.270732 seconds and try again... (tryings = 1, bot id 
+= 8906455677)

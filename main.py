@@ -17,6 +17,7 @@ import gigachat as gc
 import notifier
 import inactivity
 import reminder_scheduler
+import followup_scheduler
 from handlers import user, admin, funnel
 
 logging.basicConfig(
@@ -57,6 +58,7 @@ async def main():
     )
     notifier.set_bot(tg_bot)
     reminder_scheduler.set_bot(tg_bot)
+    followup_scheduler.set_bot(tg_bot)
 
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)
@@ -93,6 +95,7 @@ async def main():
     tasks = [dp.start_polling(tg_bot, allowed_updates=dp.resolve_used_update_types())]
     tasks.append(inactivity.run_inactivity_monitor())
     tasks.append(reminder_scheduler.run_reminder_scheduler())
+    tasks.append(followup_scheduler.run_followup())
 
     # ── HTTP API сервер ──
     if config.BOT_API_SECRET:

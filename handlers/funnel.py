@@ -1,7 +1,9 @@
+import asyncio
 import logging
+import base64
 from datetime import datetime
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 
 import database as db
@@ -9,7 +11,7 @@ import gigachat as gc
 import messages as msg
 import keyboards as kb
 from states import Funnel, Reminder
-from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL
+from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL, PRODUCT_IMAGES
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -17,8 +19,50 @@ logger = logging.getLogger(__name__)
 # Глобальный GigaChat клиент (инициализируется в main.py)
 gigachat_client: gc.GigaChatClient = None
 
-# Счётчик сообщений для предложения заказать
-_ai_message_count: dict[int, int] = {}
+# Нудж-цепочка: таймеры и счётчики
+_nudge_timers: dict[int, asyncio.Task] = {}
+_nudge_count: dict[int, int] = {}
+MAX_NUDGES = 3
+NUDGE_INTERVALS = [45, 90]  # сек между нудж 1→2, 2→3
+
+
+def _cancel_nudge_timers(user_id: int):
+    if user_id in _nudge_timers:
+        _nudge_timers[user_id].cancel()
+        _nudge_timers.pop(user_id, None)
+
+
+async def _delayed_nudge(user_id: int, chat_id: int, bot: Bot):
+    """Фоновый таймер — отправляет следующий нудж если пользователь молчит."""
+    stage = _nudge_count.get(user_id, 0)
+    if stage >= MAX_NUDGES:
+        return
+    interval_idx = stage - 1  # после 1-го нуджа ждём 45с, после 2-го — 90с
+    if interval_idx < 0 or interval_idx >= len(NUDGE_INTERVALS):
+        return
+    delay = NUDGE_INTERVALS[interval_idx]
+    await asyncio.sleep(delay)
+    if user_id not in _nudge_timers:
+        return
+    current_stage = _nudge_count.get(user_id, 0)
+    if current_stage != stage:
+        return
+    _nudge_count[user_id] = stage + 1
+    nudge_idx = (stage) % len(msg.ORDER_NUDGES)
+    nudge_text = msg.ORDER_NUDGES[nudge_idx]
+    try:
+        await bot.send_message(
+            chat_id,
+            nudge_text.format(url=WEBSITE_URL),
+            reply_markup=kb.kb_ai_chat(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Nudge send error: {e}")
+        return
+    _nudge_timers[user_id] = asyncio.create_task(
+        _delayed_nudge(user_id, chat_id, bot)
+    )
 
 
 async def _update_bot_msg_time(user_id: int) -> None:
@@ -26,9 +70,9 @@ async def _update_bot_msg_time(user_id: int) -> None:
 
 
 async def _maybe_nudge_to_order(user_id: int, message: Message) -> None:
-    """Подталкивает к заказу после КАЖДОГО ответа бота, чередуя вопросы."""
-    count = _ai_message_count.get(user_id, 0) + 1
-    _ai_message_count[user_id] = count
+    """Подталкивает к заказу. Запускает цепочку из MAX_NUDGES нуджей с задержками."""
+    count = _nudge_count.get(user_id, 0) + 1
+    _nudge_count[user_id] = count
     nudge_idx = (count - 1) % len(msg.ORDER_NUDGES)
     nudge_text = msg.ORDER_NUDGES[nudge_idx]
     await message.answer(
@@ -36,6 +80,11 @@ async def _maybe_nudge_to_order(user_id: int, message: Message) -> None:
         reply_markup=kb.kb_ai_chat(),
         parse_mode="Markdown"
     )
+    _cancel_nudge_timers(user_id)
+    if count < MAX_NUDGES:
+        _nudge_timers[user_id] = asyncio.create_task(
+            _delayed_nudge(user_id, message.chat.id, message.bot)
+        )
 
 
 # ══════════════════════════════════════════════
@@ -199,6 +248,11 @@ async def cb_budget(call: CallbackQuery, state: FSMContext):
     await call.message.answer(msg.AI_INTRO, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
     await state.set_state(Funnel.ai_chat)
 
+    # Отправляем фото товаров
+    await _update_bot_msg_time(call.from_user.id)
+    await call.message.answer(msg.PRODUCT_PHOTOS_HEADER, parse_mode="Markdown")
+    await send_product_photos(call.message.chat.id, call.bot)
+
     # Уведомляем админа о новом лиде в воронке
     await _notify_admin_new_lead(call.bot, call.from_user.id)
 
@@ -265,6 +319,7 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
     """Общая логика AI-обработки для любого входящего сообщения."""
     user_id = message.from_user.id
     text = message.text or ""
+    _cancel_nudge_timers(user_id)
 
     await db.log_message(user_id, "incoming", text)
 
@@ -316,6 +371,73 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
         else:
             await message.answer(msg.FALLBACK_AI, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
     return True
+
+
+# ══════════════════════════════════════════════
+#  ФОТО — РАСПОЗНАВАНИЕ
+# ══════════════════════════════════════════════
+
+@router.message(F.photo)
+async def msg_photo(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    _cancel_nudge_timers(user_id)
+
+    user = await db.get_user(user_id)
+    if user and user.get("stage") == "manager_takeover":
+        from handlers.admin import forward_to_admin, user_takeovers
+        if user_id in user_takeovers:
+            await forward_to_admin(bot, user_id, "[Фото]")
+        return
+
+    await bot.send_chat_action(message.chat.id, "typing")
+    await state.set_state(Funnel.ai_chat)
+    await db.log_message(user_id, "incoming", "[Фото]")
+
+    # Скачиваем фото
+    try:
+        file = await bot.get_file(message.photo[-1].file_id)
+        buf = await bot.download_file(file.file_path)
+        image_bytes = buf.getvalue()
+        image_b64 = base64.b64encode(image_bytes).decode()
+    except Exception as e:
+        logger.error(f"Photo download error: {e}")
+        await message.answer(msg.VISION_FAIL)
+        await _notify_admin_needs_help(bot, user_id, "[Ошибка загрузки фото]", 0)
+        return
+
+    # Распознаём через GigaChat Vision
+    if gigachat_client:
+        history = gc.get_history(user_id)
+        ai_response = await gigachat_client.chat_with_vision(history, message.caption or "", image_b64)
+        if ai_response:
+            gc.add_to_history(user_id, "user", f"[Фото] {message.caption or ''}")
+            gc.add_to_history(user_id, "assistant", ai_response)
+            await db.update_user(user_id, ai_confusion_count=0)
+            await _update_bot_msg_time(user_id)
+            await db.log_message(user_id, "outgoing", ai_response)
+            await message.answer(ai_response, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
+            await _maybe_nudge_to_order(user_id, message)
+            return
+
+    # Vision не сработал
+    await message.answer(msg.VISION_FAIL)
+    await _notify_admin_needs_help(bot, user_id, f"[Фото не распознано] {message.caption or ''}", 3)
+    await db.update_user(user_id, stage="manager_takeover")
+
+
+# ══════════════════════════════════════════════
+#  ФОТО ТОВАРОВ
+# ══════════════════════════════════════════════
+
+async def send_product_photos(chat_id: int, bot: Bot):
+    """Отправляет фото товаров после презентации."""
+    for url, caption in PRODUCT_IMAGES:
+        try:
+            await bot.send_photo(chat_id, url, caption=caption, parse_mode="Markdown")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Product photo send error: {e}")
+            await bot.send_message(chat_id, f"👉 [{caption}]({url})", parse_mode="Markdown")
 
 
 def _check_faq(text: str) -> str:

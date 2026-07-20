@@ -29,3 +29,9 @@ BOT_API_SECRET: str = os.getenv("BOT_API_SECRET", "")
 
 AI_CONFUSION_THRESHOLD: int = 3
 MAX_HISTORY_MESSAGES: int = 12
+
+PRODUCT_IMAGES: list = [
+    ("https://astreys.ru/img/star-map.jpg", "🌟 *Карта звёздного неба* — PDF от 590₽"),
+    ("https://astreys.ru/img/sound-poster.jpg", "🎵 *Картина со звуком* — от 2190₽"),
+    ("https://astreys.ru/img/photo-poster.jpg", "📸 *Фотопостер Polaroid* — от 1290₽"),
+]

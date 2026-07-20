@@ -8,25 +8,17 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import takeover
 from states import Admin, Funnel
 from config import ADMIN_PASSWORD, ADMIN_IDS
-from vk_bot import states as vk_states
-from vk_bot.api import VKAPI
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-# admin_id -> user_id (активные перехваты управления)
-active_takeovers: dict[int, int] = {}
-# user_id -> admin_id (обратный индекс)
-user_takeovers: dict[int, int] = {}
 
-# VK API для отправки сообщений от админа в VK
-_vk_api: VKAPI = None
-
-def set_vk_api(api: VKAPI) -> None:
-    global _vk_api
-    _vk_api = api
+def set_vk_api(api) -> None:
+    """Вызывается из vk_bot.bot при старте ВК-бота."""
+    takeover.set_vk_api(api)
 
 
 def is_admin(user_id: int) -> bool:
@@ -288,145 +280,128 @@ async def broadcast_send(message: Message, state: FSMContext, bot: Bot):
 async def cb_takeover(call: CallbackQuery, state: FSMContext, bot: Bot):
     if not await _check_admin_auth(call):
         return
-    await call.answer()
+    await call.answer("Диалог твой 🎯")
 
     user_id = int(call.data.split("takeover_", 1)[1])
     admin_id = call.from_user.id
 
-    active_takeovers[admin_id] = user_id
-    user_takeovers[user_id] = admin_id
-
-    await db.start_takeover(admin_id, user_id)
-    await db.update_user(user_id, stage="manager_takeover")
-
-    user = await db.get_user(user_id)
-    name = (user.get("full_name") or user.get("first_name") or "Пользователь") if user else "Пользователь"
+    released = await takeover.start(admin_id, user_id)
+    name, source = await takeover.describe_user(user_id)
 
     await state.set_state(Admin.takeover)
+
+    if released is not None:
+        prev_name, _ = await takeover.describe_user(released)
+        await call.message.answer(f"↩️ Диалог с {prev_name} закрыт — ты можешь вести только один за раз.")
+
     await call.message.answer(
-        msg.ADMIN_TAKEOVER_ON.format(name=name, user_id=user_id),
-        parse_mode="Markdown"
+        msg.ADMIN_TAKEOVER_ON.format(name=name, source=source),
+        reply_markup=kb.kb_takeover_active(user_id),
+        parse_mode="Markdown",
     )
 
-    # Устанавливаем VK state в MANAGER_TAKEOVER если это VK пользователь
-    if user_id < 0:
-        vk_user_id = abs(user_id)
-        vk_states.set_state(vk_user_id, vk_states.MANAGER_TAKEOVER)
-        try:
-            if _vk_api:
-                await _vk_api.send_message(
-                    vk_user_id,
-                    "👨‍💼 С вами связался менеджер АСТРЕЙ! Задавайте любые вопросы — он ответит лично 😊"
-                )
-        except Exception as e:
-            logger.error(f"Failed to notify VK user {vk_user_id}: {e}")
-    else:
-        try:
-            await bot.send_message(user_id, msg.TAKEOVER_USER_NOTIFY, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Failed to notify user {user_id} about takeover: {e}")
+    # Показываем последние сообщения, чтобы админ вошёл в контекст
+    history = await _recent_dialog(user_id)
+    if history:
+        await call.message.answer(history, parse_mode="Markdown")
+
+    ok, err = await takeover.send_to_user(user_id, msg.TAKEOVER_USER_NOTIFY)
+    if not ok:
+        await call.message.answer(f"⚠️ Клиента предупредить не вышло: {err}")
+
+
+@router.callback_query(F.data.startswith("release_"))
+async def cb_release(call: CallbackQuery, state: FSMContext):
+    if not await _check_admin_auth(call):
+        return
+    await call.answer()
+    admin_id = call.from_user.id
+
+    user_id = await takeover.stop(admin_id)
+    if user_id is None:
+        await call.message.answer("У тебя нет активного диалога.")
+        return
+
+    name, _ = await takeover.describe_user(user_id)
+    gc.clear_history(user_id)
+    await state.set_state(Admin.panel)
+    await call.message.answer(
+        msg.ADMIN_TAKEOVER_OFF.format(name=name),
+        reply_markup=kb.kb_admin_panel(),
+    )
 
 
 @router.message(Command("release"))
-async def cmd_release(message: Message, state: FSMContext, bot: Bot):
+async def cmd_release(message: Message, state: FSMContext):
     admin_id = message.from_user.id
-    user_id = active_takeovers.pop(admin_id, None)
+    user_id = await takeover.stop(admin_id)
 
-    if not user_id:
-        await message.answer("У тебя нет активного перехвата.")
+    if user_id is None:
+        await message.answer("У тебя нет активного диалога.")
         return
 
-    user_takeovers.pop(user_id, None)
-    await db.end_takeover(admin_id, user_id)
-    await db.update_user(user_id, stage="ai_chat")
-
-    user = await db.get_user(user_id)
-    name = (user.get("full_name") or user.get("first_name") or "Пользователь") if user else "Пользователь"
-
+    name, _ = await takeover.describe_user(user_id)
+    gc.clear_history(user_id)
     await state.set_state(Admin.panel)
-    await message.answer(msg.ADMIN_TAKEOVER_OFF.format(name=name))
-
-    # Возвращаем VK пользователя в AI-чат
-    if user_id < 0:
-        vk_user_id = abs(user_id)
-        vk_states.set_state(vk_user_id, vk_states.AI_CHAT)
-        vk_states.clear(vk_user_id)
-        gc.clear_history(user_id)
-        try:
-            if _vk_api:
-                await _vk_api.send_message(
-                    vk_user_id,
-                    "💬 Наш менеджер завершил диалог. Если появятся вопросы — пиши, всегда помогу! 😊"
-                )
-        except Exception as e:
-            logger.error(f"Failed to notify VK user {vk_user_id}: {e}")
-    else:
-        try:
-            await bot.send_message(
-                user_id,
-                "💬 Наш менеджер завершил диалог. Если появятся вопросы — пиши, всегда помогу! 😊",
-            )
-        except Exception:
-            pass
+    await message.answer(
+        msg.ADMIN_TAKEOVER_OFF.format(name=name),
+        reply_markup=kb.kb_admin_panel(),
+    )
 
 
-@router.message(Admin.takeover)
-async def admin_takeover_message(message: Message, bot: Bot):
+def _admin_is_relaying(message: Message) -> bool:
+    """Фильтр: админ прямо сейчас ведёт диалог, а это не команда."""
+    text = message.text or ""
+    if text.startswith("/"):
+        return False
+    return takeover.user_of(message.from_user.id) is not None
+
+
+@router.message(_admin_is_relaying)
+async def admin_takeover_message(message: Message):
+    """Всё, что админ пишет во время перехвата, уходит клиенту.
+
+    Опирается на takeover (восстанавливается из БД), а не на FSM-состояние —
+    поэтому переживает рестарт контейнера.
+    """
     admin_id = message.from_user.id
-    user_id = active_takeovers.get(admin_id)
+    user_id = takeover.user_of(admin_id)
 
-    if not user_id:
-        await message.answer(
-            "Нет активного перехвата. Используй /admin для входа в панель."
-        )
+    text = message.text or message.caption or ""
+    if not text:
+        await message.answer("⚠️ Пока умею пересылать только текст. Опиши словами или дай ссылку.")
         return
 
-    if message.text and message.text.startswith("/release"):
-        return  # Обрабатывается отдельным хэндлером
-
-    await db.log_message(user_id, "outgoing_admin", message.text or "[медиа]")
-
-    # Отправка VK пользователю через VK API
-    if user_id < 0:
-        vk_user_id = abs(user_id)
-        try:
-            if _vk_api:
-                await _vk_api.send_message(vk_user_id, message.text or "")
-            else:
-                await message.answer("❌ VK API не инициализирован")
-        except Exception as e:
-            await message.answer(f"❌ Не удалось доставить в VK: {e}")
+    ok, err = await takeover.send_to_user(user_id, text)
+    if ok:
+        await db.log_message(user_id, "outgoing_admin", text)
     else:
-        try:
-            await bot.send_message(user_id, message.text or "")
-        except Exception as e:
-            await message.answer(f"❌ Не удалось доставить сообщение: {e}")
+        await message.answer(f"❌ Не доставлено: {err}")
+
+
+async def _recent_dialog(user_id: int, limit: int = 6) -> str:
+    """Последние реплики диалога — чтобы менеджер сразу видел контекст."""
+    try:
+        rows = await db.get_user_messages(user_id, limit=limit)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["🗂 *Последние сообщения:*", ""]
+    for row in reversed(rows):
+        who = "👤" if row.get("direction") == "incoming" else "🤖"
+        body = (row.get("text") or "")[:150]
+        lines.append(f"{who} {takeover.escape(body)}")
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════
 #  ФОРВАРД СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ К АДМИНУ
 # ══════════════════════════════════════════════
 
-async def forward_to_admin(bot: Bot, user_id: int, text: str):
-    admin_id = user_takeovers.get(user_id)
-    if not admin_id:
-        return False
-
-    user = await db.get_user(user_id)
-    name = (user.get("full_name") or user.get("first_name") or f"ID:{user_id}") if user else f"ID:{user_id}"
-    username = (user.get("username") or "") if user else ""
-    uname_str = f" (@{username})" if username else ""
-
-    try:
-        await bot.send_message(
-            admin_id,
-            f"👤 *{name}{uname_str}:*\n{text}",
-            parse_mode="Markdown"
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Failed to forward message to admin: {e}")
-        return False
+async def forward_to_admin(bot: Bot, user_id: int, text: str) -> bool:
+    """Сообщение клиента → ведущему админу (совместимость со старым кодом)."""
+    return await takeover.relay_to_admin(user_id, text)
 
 
 # ══════════════════════════════════════════════

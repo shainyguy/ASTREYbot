@@ -3,7 +3,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from config import WEBSITE_URL
+from config import WEBSITE_URL, VK_GROUP_ID
 
 
 def kb_welcome() -> InlineKeyboardMarkup:
@@ -226,14 +226,36 @@ def kb_admin_leads_list(leads: list, page: int = 0) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def kb_notify_admin(telegram_id: int) -> InlineKeyboardMarkup:
+def kb_notify_admin(user_db_id: int, username: str = None) -> InlineKeyboardMarkup:
+    """Кнопки под уведомлением о клиенте.
+
+    Никаких tg://user?id= — Telegram отклоняет такие кнопки для юзеров
+    с закрытой приватностью, и вместе с кнопкой падало всё уведомление.
+    Только https-ссылки, которые валидны всегда.
+    """
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(
-        text="💬 Открыть диалог",
-        url=f"tg://user?id={telegram_id}"
+        text="🎯 Взять в работу",
+        callback_data=f"takeover_{user_db_id}"
     ))
+    if user_db_id < 0:
+        vk_id = abs(user_db_id)
+        link = f"https://vk.com/gim{VK_GROUP_ID}?sel={vk_id}" if VK_GROUP_ID else f"https://vk.com/id{vk_id}"
+        builder.row(InlineKeyboardButton(text="🔗 Открыть в ВК", url=link))
+    elif username:
+        builder.row(InlineKeyboardButton(
+            text="🔗 Открыть в Telegram",
+            url=f"https://t.me/{username.lstrip('@')}"
+        ))
+    return builder.as_markup()
+
+
+def kb_takeover_active(user_db_id: int) -> InlineKeyboardMarkup:
+    """Показывается админу, пока он ведёт диалог."""
+    builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(
-        text="🎯 Взять управление",
-        callback_data=f"takeover_{telegram_id}"
+        text="✅ Завершить диалог",
+        callback_data=f"release_{user_db_id}"
     ))
+    builder.row(InlineKeyboardButton(text="⚙️ Панель", callback_data="admin_panel"))
     return builder.as_markup()

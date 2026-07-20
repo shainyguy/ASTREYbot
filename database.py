@@ -535,6 +535,13 @@ async def end_takeover(admin_id: int, user_id: int) -> None:
     )
 
 
+async def get_active_takeovers() -> List[Dict]:
+    """Незакрытые перехваты — нужны, чтобы пережить рестарт контейнера."""
+    return await _DB.fetch_all(
+        "SELECT admin_id, user_id FROM admin_takeovers WHERE ended_at IS NULL"
+    )
+
+
 # ─────────────────────────────────────────────
 #  SUBSCRIPTIONS
 # ─────────────────────────────────────────────

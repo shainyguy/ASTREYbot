@@ -8,6 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import notifier
+import takeover
 from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL
 from . import states as st
 from . import keyboards as vk_kb
@@ -15,6 +16,9 @@ from . import keyboards as vk_kb
 logger = logging.getLogger(__name__)
 
 gigachat_client = None  # Устанавливается из main.py
+
+# vk_id -> сколько раз извинились, пока менеджер не подошёл
+_waiting_acks: dict[int, int] = {}
 
 # Счётчик AI сообщений для предложения заказать
 _ai_message_count: dict[int, int] = {}
@@ -72,13 +76,15 @@ async def handle_message(message: Message) -> None:
     await db.log_message(db_id, "incoming", raw_text or str(payload))
 
     # ── Режим менеджера ──
-    if state == st.MANAGER_TAKEOVER:
-        await notifier.notify_admins(
-            ADMIN_IDS,
-            f"💬 *Сообщение из ВКонтакте:*\n"
-            f"🔗 vk.com/id{user_id}\n"
-            f"💬 {raw_text}"
-        )
+    if state in (st.MANAGER_TAKEOVER, st.WAITING_MANAGER):
+        # Диалог уже кто-то ведёт — шлём напрямую этому менеджеру
+        if await takeover.relay_to_admin(db_id, raw_text):
+            return
+        # Ещё не взяли — зовём админов с кнопкой «Взять в работу»
+        await takeover.notify_admins_waiting(db_id, raw_text)
+        if _waiting_acks.get(user_id, 0) == 0:
+            await _send(message, _strip_md(msg.MANAGER_WAITING_ACK))
+        _waiting_acks[user_id] = _waiting_acks.get(user_id, 0) + 1
         return
 
     # ── Кнопка Назад ──
@@ -97,10 +103,10 @@ async def handle_message(message: Message) -> None:
 
     # ── Позвать менеджера ──
     if cmd == "call_manager":
-        st.set_state(user_id, st.MANAGER_TAKEOVER)
-        await db.update_user(db_id, stage="manager_takeover")
+        st.set_state(user_id, st.WAITING_MANAGER)
+        await db.update_user(db_id, stage="waiting_manager")
         await _send(message, _strip_md(msg.MANAGER_CONNECTED))
-        await _notify_needs_help(user_id, db_id, raw_text, 0)
+        await takeover.notify_admins_waiting(db_id, "Нажал «Позвать менеджера»")
         return
 
     # ── Рестарт / /start ──
@@ -361,8 +367,8 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
         confusion = ((user.get("ai_confusion_count") or 0) + 1) if user else 1
         await db.update_user(db_id, ai_confusion_count=confusion)
         if confusion >= AI_CONFUSION_THRESHOLD:
-            st.set_state(user_id, st.MANAGER_TAKEOVER)
-            await db.update_user(db_id, stage="manager_takeover")
+            st.set_state(user_id, st.WAITING_MANAGER)
+            await db.update_user(db_id, stage="waiting_manager")
             await _notify_needs_help(user_id, db_id, text, confusion)
             await _send(message, _strip_md(msg.MANAGER_CONNECTED))
         else:
@@ -416,45 +422,51 @@ async def _handle_get_phone(message: Message, user_id: int, db_id: int, text: st
 #  УВЕДОМЛЕНИЯ АДМИНУ (через TG)
 # ══════════════════════════════════════════════
 
+async def _send_admins(text: str, db_id: int) -> None:
+    """Уведомление админам с кнопкой «Взять в работу».
+
+    Главный баг был здесь: markup не передавался, поэтому перехватить
+    ВК-диалог из Telegram было физически нечем.
+    """
+    import keyboards as kb
+    markup = kb.kb_notify_admin(db_id)
+    for admin_id in ADMIN_IDS:
+        await notifier.send_to_admin(admin_id, text, markup)
+
+
 async def _notify_new_lead(vk_id: int, db_id: int) -> None:
     user = await db.get_user(db_id)
     if not user:
         return
     text = (
-        f"🔔 *НОВЫЙ ЛИД — ВКонтакте!*\n\n"
-        f"👤 VK: [vk.com/id{vk_id}](https://vk.com/id{vk_id})\n"
+        f"🔔 *Новый лид — ВКонтакте*\n\n"
+        f"👤 vk.com/id{vk_id}\n"
         f"🎁 Повод: {user.get('occasion') or '—'}\n"
         f"👥 Кому: {user.get('recipient') or '—'}\n"
         f"💰 Бюджет: {user.get('budget') or '—'}\n"
         f"⏰ {_now()}"
     )
-    await notifier.notify_admins(ADMIN_IDS, text)
+    await _send_admins(text, db_id)
 
 
 async def _notify_contact(vk_id: int, db_id: int, name: str, phone: str,
                           occasion: str, recipient: str, budget: str) -> None:
     text = (
-        f"🎯 *ЛИД из ВК ОСТАВИЛ КОНТАКТ!*\n\n"
-        f"👤 Имя: *{name}*\n"
-        f"🔗 VK: [vk.com/id{vk_id}](https://vk.com/id{vk_id})\n"
-        f"📞 Телефон: *{phone}*\n\n"
+        f"🎯 *Лид из ВК оставил контакт*\n\n"
+        f"👤 Имя: *{takeover.escape(name)}*\n"
+        f"🔗 vk.com/id{vk_id}\n"
+        f"📞 Телефон: *{takeover.escape(phone)}*\n\n"
         f"🎁 Повод: {occasion or '—'}\n"
         f"👥 Кому: {recipient or '—'}\n"
         f"💰 Бюджет: {budget or '—'}\n"
         f"⏰ {_now()}\n\n"
-        f"_Рекомендую связаться в течение 30 минут!_ 🔥"
+        f"_Лучше перезвонить в ближайшие полчаса — пока горячий_ 🔥"
     )
-    await notifier.notify_admins(ADMIN_IDS, text)
+    await _send_admins(text, db_id)
 
 
 async def _notify_needs_help(vk_id: int, db_id: int, last_msg: str, count: int) -> None:
-    text = (
-        f"🆘 *Пользователь ВК просит помощи!*\n\n"
-        f"🔗 [vk.com/id{vk_id}](https://vk.com/id{vk_id})\n"
-        f"❓ _{last_msg[:200]}_\n\n"
-        f"_AI затруднился {count} раза подряд_"
-    )
-    await notifier.notify_admins(ADMIN_IDS, text)
+    await takeover.notify_admins_waiting(db_id, last_msg[:300])
 
 
 async def _notify_no_phone(vk_id: int, db_id: int) -> None:
@@ -463,11 +475,11 @@ async def _notify_no_phone(vk_id: int, db_id: int) -> None:
         return
     text = (
         f"👤 *Лид из ВК без телефона*\n\n"
-        f"Имя: {user.get('full_name') or '—'}\n"
-        f"VK: [vk.com/id{vk_id}](https://vk.com/id{vk_id})\n"
+        f"Имя: {takeover.escape(user.get('full_name') or '—')}\n"
+        f"vk.com/id{vk_id}\n"
         f"Повод: {user.get('occasion') or '—'}"
     )
-    await notifier.notify_admins(ADMIN_IDS, text)
+    await _send_admins(text, db_id)
 
 
 # ══════════════════════════════════════════════

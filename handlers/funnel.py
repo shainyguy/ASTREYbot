@@ -11,6 +11,8 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import notifier
+import takeover
 from states import Funnel, Reminder
 from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL, PRODUCT_IMAGES
 
@@ -325,10 +327,8 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
     await db.log_message(user_id, "incoming", text)
 
     user = await db.get_user(user_id)
-    if user and user.get("stage") == "manager_takeover":
-        from handlers.admin import forward_to_admin, user_takeovers
-        if user_id in user_takeovers:
-            await forward_to_admin(bot, user_id, text)
+    if user and user.get("stage") in ("manager_takeover", "waiting_manager"):
+        await route_to_manager(user_id, text, message)
         return False
 
     await bot.send_chat_action(message.chat.id, "typing")
@@ -366,8 +366,10 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
         await db.update_user(user_id, ai_confusion_count=confusion)
 
         if confusion >= AI_CONFUSION_THRESHOLD:
-            await _notify_admin_needs_help(bot, user_id, text, confusion)
-            await db.update_user(user_id, stage="manager_takeover")
+            await db.update_user(user_id, stage="waiting_manager")
+            await takeover.notify_admins_waiting(
+                user_id, f"ИИ не справился {confusion} раза подряд. Последний вопрос: {text}"
+            )
             await message.answer(msg.MANAGER_CONNECTED, parse_mode="Markdown")
         else:
             await message.answer(msg.FALLBACK_AI, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
@@ -384,10 +386,8 @@ async def msg_photo(message: Message, state: FSMContext, bot: Bot):
     _cancel_nudge_timers(user_id)
 
     user = await db.get_user(user_id)
-    if user and user.get("stage") == "manager_takeover":
-        from handlers.admin import forward_to_admin, user_takeovers
-        if user_id in user_takeovers:
-            await forward_to_admin(bot, user_id, "[Фото]")
+    if user and user.get("stage") in ("manager_takeover", "waiting_manager"):
+        await route_to_manager(user_id, "[Клиент прислал фото]", message)
         return
 
     await bot.send_chat_action(message.chat.id, "typing")
@@ -422,8 +422,10 @@ async def msg_photo(message: Message, state: FSMContext, bot: Bot):
 
     # Vision не сработал
     await message.answer(msg.VISION_FAIL)
-    await _notify_admin_needs_help(bot, user_id, f"[Фото не распознано] {message.caption or ''}", 3)
-    await db.update_user(user_id, stage="manager_takeover")
+    await db.update_user(user_id, stage="waiting_manager")
+    await takeover.notify_admins_waiting(
+        user_id, f"Прислал фото, ИИ его не разобрал. Подпись: {message.caption or '—'}"
+    )
 
 
 # ══════════════════════════════════════════════
@@ -468,9 +470,35 @@ async def cb_faq(call: CallbackQuery):
 async def cb_call_manager(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     user_id = call.from_user.id
-    await db.update_user(user_id, stage="manager_takeover")
+    # waiting_manager, а не manager_takeover: менеджер диалог ещё не взял.
+    # Раньше клиент сразу проваливался в тишину и застревал там навсегда.
+    await db.update_user(user_id, stage="waiting_manager")
     await call.message.answer(msg.MANAGER_CONNECTED, parse_mode="Markdown")
-    await _notify_admin_needs_help(bot, user_id, "Пользователь нажал 'Позвать менеджера'", 0)
+    await takeover.notify_admins_waiting(user_id, "Нажал «Позвать менеджера»")
+
+
+# ══════════════════════════════════════════════
+#  МАРШРУТИЗАЦИЯ К МЕНЕДЖЕРУ
+# ══════════════════════════════════════════════
+
+# user_id -> сколько раз уже извинились, пока менеджер не подошёл
+_waiting_acks: dict[int, int] = {}
+
+
+async def route_to_manager(user_id: int, text: str, message: Message) -> None:
+    """Клиент в режиме менеджера: либо релеим ведущему админу, либо зовём свободного."""
+    await db.log_message(user_id, "incoming", text)
+
+    if await takeover.relay_to_admin(user_id, text):
+        return
+
+    # Диалог ещё никто не взял — дёргаем всех админов
+    await takeover.notify_admins_waiting(user_id, text)
+
+    acks = _waiting_acks.get(user_id, 0)
+    if acks == 0:
+        await message.answer(msg.MANAGER_WAITING_ACK, parse_mode="Markdown")
+    _waiting_acks[user_id] = acks + 1
 
 
 # ══════════════════════════════════════════════
@@ -571,28 +599,26 @@ async def _complete_lead(message: Message, state: FSMContext, bot: Bot, phone: s
 #  УВЕДОМЛЕНИЯ АДМИНИСТРАТОРУ
 # ══════════════════════════════════════════════
 
+async def _send_admins(text: str, user_id: int, username: str = None) -> None:
+    """Одна точка отправки уведомлений — с фолбэком, чтобы ничего не терялось."""
+    markup = kb.kb_notify_admin(user_id, username)
+    for admin_id in ADMIN_IDS:
+        await notifier.send_to_admin(admin_id, text, markup)
+
+
 async def _notify_admin_new_lead(bot: Bot, user_id: int):
     user = await db.get_user(user_id)
     if not user:
         return
     text = msg.ADMIN_NOTIFICATION_NEW_LEAD.format(
-        full_name=user.get("full_name") or user.get("first_name") or "Неизвестно",
-        username=user.get("username") or "без username",
+        full_name=escape_md(user.get("full_name") or user.get("first_name") or "Неизвестно"),
+        username=escape_md(user.get("username") or "без username"),
         occasion=user.get("occasion") or "—",
         recipient=user.get("recipient") or "—",
         budget=user.get("budget") or "—",
         created_at=_now_str(),
     )
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                text,
-                reply_markup=kb.kb_notify_admin(user_id),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id}: {e}")
+    await _send_admins(text, user_id, user.get("username"))
 
 
 async def _notify_admin_contact(
@@ -602,73 +628,38 @@ async def _notify_admin_contact(
     user = await db.get_user(user_id)
     product_interest = user.get("product_interest", "Карта звёздного неба") if user else "—"
     text = msg.ADMIN_NOTIFICATION_CONTACT.format(
-        full_name=name,
-        username=username or "без username",
+        full_name=escape_md(name),
+        username=escape_md(username or "без username"),
         telegram_id=user_id,
-        phone=phone,
+        phone=escape_md(phone),
         occasion=occasion or "—",
         recipient=recipient or "—",
         budget=budget or "—",
         product_interest=product_interest or "—",
         created_at=_now_str(),
     )
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                text,
-                reply_markup=kb.kb_notify_admin(user_id),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id}: {e}")
+    await _send_admins(text, user_id, username)
 
 
 async def _notify_admin_needs_help(bot: Bot, user_id: int, last_message: str, count: int):
-    user = await db.get_user(user_id)
-    name = (user.get("full_name") or user.get("first_name") or "Пользователь") if user else "Пользователь"
-    username = (user.get("username") or "без username") if user else "без username"
-    text = msg.NEED_HELP_NOTIFY.format(
-        name=name,
-        username=username,
-        user_id=user_id,
-        last_message=escape_md(last_message[:200]),
-        count=count,
-    )
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                text,
-                reply_markup=kb.kb_notify_admin(user_id),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id}: {e}")
+    """Оставлено для совместимости — вся логика теперь в takeover."""
+    await takeover.notify_admins_waiting(user_id, last_message[:300])
 
 
 async def _notify_admin_lead_no_phone(bot: Bot, user_id: int):
     user = await db.get_user(user_id)
     if not user:
         return
-    name = user.get("full_name") or user.get("first_name") or "Неизвестно"
-    username = user.get("username") or "без username"
+    name = escape_md(user.get("full_name") or user.get("first_name") or "Неизвестно")
+    username = user.get("username") or ""
     text = (
         f"👤 *Лид прошёл воронку без телефона*\n\n"
-        f"Имя: {name} (@{username})\n"
-        f"Telegram ID: `{user_id}`\n"
+        f"Имя: {name} (@{escape_md(username or 'без username')})\n"
+        f"ID: `{user_id}`\n"
         f"Повод: {user.get('occasion') or '—'}\n"
         f"Бюджет: {user.get('budget') or '—'}"
     )
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id, text,
-                reply_markup=kb.kb_notify_admin(user_id),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
+    await _send_admins(text, user_id, username)
 
 
 def _now_str() -> str:
@@ -789,5 +780,9 @@ async def cb_del_reminder(call: CallbackQuery, state: FSMContext):
 
 
 def escape_md(text: str) -> str:
-    """Экранирует Markdown-спецсимволы в тексте от пользователя."""
-    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", r"\\\1", text)
+    """Экранирует спецсимволы legacy Markdown (parse_mode='Markdown').
+
+    Раньше экранировалось по правилам MarkdownV2 — слэши перед . - ! ( )
+    в legacy-режиме невалидны, из-за них Telegram отклонял сообщение целиком.
+    """
+    return re.sub(r"([_*`\[])", r"\\\1", text or "")

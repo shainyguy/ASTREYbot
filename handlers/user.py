@@ -8,8 +8,8 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import takeover
 from states import Funnel
-from handlers.admin import forward_to_admin, user_takeovers
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -148,8 +148,8 @@ async def msg_welcome_free(message: Message, state: FSMContext):
     text = message.text or ""
     await db.log_message(message.from_user.id, "incoming", text)
 
-    if message.from_user.id in user_takeovers:
-        await forward_to_admin(message.bot, message.from_user.id, text)
+    if takeover.admin_of(message.from_user.id) is not None:
+        await takeover.relay_to_admin(message.from_user.id, text)
         return
 
     # Сразу в AI-чат, не дублируем приветствие
@@ -163,10 +163,9 @@ async def catch_all_messages(message: Message, state: FSMContext):
     user_id = message.from_user.id
     current_state = await state.get_state()
 
-    if user_id in user_takeovers:
+    if takeover.admin_of(user_id) is not None:
         await db.log_message(user_id, "incoming", message.text)
-        forwarded = await forward_to_admin(message.bot, user_id, message.text)
-        if forwarded:
+        if await takeover.relay_to_admin(user_id, message.text):
             return
 
     if current_state is None:

@@ -15,6 +15,7 @@ import config
 import database as db
 import gigachat as gc
 import notifier
+import takeover
 import inactivity
 import reminder_scheduler
 import followup_scheduler
@@ -57,8 +58,13 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     notifier.set_bot(tg_bot)
+    takeover.set_bot(tg_bot)
     reminder_scheduler.set_bot(tg_bot)
     followup_scheduler.set_bot(tg_bot)
+
+    # Поднимаем незакрытые перехваты — иначе после рестарта Railway
+    # менеджер молча терял все активные диалоги
+    restored = await takeover.restore_from_db()
 
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)
@@ -70,8 +76,14 @@ async def main():
     if config.VK_TOKEN:
         try:
             from vk_bot import funnel as vk_funnel
+            from vk_bot.api import VKAPI
             if gigachat_instance:
                 vk_funnel.gigachat_client = gigachat_instance
+            # Подключаем VK API сразу: менеджер должен уметь отвечать в ВК,
+            # даже если Long Poll ещё не поднялся
+            vk_api = VKAPI(config.VK_TOKEN)
+            takeover.set_vk_api(vk_api)
+            notifier.set_vk_api(vk_api)
             vk_enabled = True
             logger.info("VK bot: ready")
         except Exception as e:
@@ -81,15 +93,12 @@ async def main():
 
     # ── Уведомление о запуске ──
     platforms = "Telegram ✅" + (" | ВКонтакте ✅" if vk_enabled else " | ВКонтакте ❌ (нет токена)")
+    restored_line = f"\n🎯 Восстановлено диалогов: {restored}" if restored else ""
     for admin_id in config.ADMIN_IDS:
-        try:
-            await tg_bot.send_message(
-                admin_id,
-                f"🚀 *Бот АСТРЕЙ запущен!*\n\n{platforms}\n\n/admin — панель управления",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
+        await notifier.send_to_admin(
+            admin_id,
+            f"🚀 *Бот АСТРЕЙ запущен*\n\n{platforms}{restored_line}\n\n/admin — панель управления",
+        )
 
     # ── Монитор неактивности + напоминания ──
     tasks = [dp.start_polling(tg_bot, allowed_updates=dp.resolve_used_update_types())]

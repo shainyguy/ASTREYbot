@@ -24,18 +24,18 @@ async def run_inactivity_monitor():
 
 
 async def _check_inactive_users():
-    cutoff = (datetime.utcnow() - timedelta(minutes=_INACTIVITY_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
     d = db.get_db()
     if not d:
         return
+    cutoff = (datetime.utcnow() - timedelta(minutes=_INACTIVITY_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
     rows = await d.fetch_all(
-        """SELECT telegram_id, full_name, username, first_name, last_bot_message_at
-           FROM users
-           WHERE last_bot_message_at IS NOT NULL
-             AND last_bot_message_at <= :cutoff
-             AND stage NOT IN ('manager_takeover', 'completed')
-             AND inactivity_notified = 0""",
-        {"cutoff": cutoff}
+        "SELECT telegram_id, full_name, username, first_name, last_bot_message_at "
+        "FROM users "
+        "WHERE last_bot_message_at IS NOT NULL "
+        "AND last_bot_message_at <= ? "
+        "AND stage NOT IN ('manager_takeover', 'completed') "
+        "AND inactivity_notified = 0",
+        {"1": cutoff}
     )
 
     for row in rows:

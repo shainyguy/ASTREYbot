@@ -9,3 +9,10 @@ venv/
 dist/
 build/
 .DS_Store
+
+*.db
+bot_debug.log
+astreybot_dump.json
+export.py
+__pycache__/
+*.pyc

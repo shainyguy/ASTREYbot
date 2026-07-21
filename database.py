@@ -172,6 +172,8 @@ async def init_db():
                 phone TEXT,
                 amount INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'awaiting_payment',
+                nudge_level INTEGER DEFAULT 0,
+                mockup_comment TEXT,
                 created_at TEXT DEFAULT NOW(),
                 updated_at TEXT DEFAULT NOW()
             )
@@ -277,6 +279,8 @@ async def init_db():
                 phone TEXT,
                 amount INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'awaiting_payment',
+                nudge_level INTEGER DEFAULT 0,
+                mockup_comment TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -342,6 +346,16 @@ async def init_db():
             await _DB.execute("ALTER TABLE leads ADD COLUMN platform TEXT DEFAULT 'telegram'")
         except Exception:
             pass
+
+    # Догоняем схему на уже существующих базах
+    try:
+        await _DB.execute("ALTER TABLE orders ADD COLUMN nudge_level INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        await _DB.execute("ALTER TABLE orders ADD COLUMN mockup_comment TEXT")
+    except Exception:
+        pass
 
     # Архив переписки больше не ведём — последние реплики живут в памяти
     # (recent.py). Работает и для PostgreSQL, и для SQLite.
@@ -434,6 +448,7 @@ async def update_last_bot_message(telegram_id: int) -> None:
 ORDER_FIELDS = (
     "platform", "product", "format", "event_date", "event_place",
     "phrase", "design", "postcard", "full_name", "phone", "amount", "status",
+    "nudge_level", "mockup_comment",
 )
 
 

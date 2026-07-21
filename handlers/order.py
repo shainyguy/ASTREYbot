@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 import database as db
 import messages as msg
 import keyboards as kb
+import mockup
 import notifier
 import order_parse as parse
 import recent
@@ -573,6 +574,86 @@ async def cb_order_paid(call: CallbackQuery, state: FSMContext):
             ),
             kb.kb_admin_order(order_id, user_id),
         )
+
+
+# ══════════════════════════════════════════════
+#  МАКЕТ: РЕАКЦИЯ КЛИЕНТА
+# ══════════════════════════════════════════════
+
+@router.callback_query(F.data.startswith("mockup_ok_"))
+async def cb_mockup_ok(call: CallbackQuery, state: FSMContext):
+    await call.answer("Спасибо! 💛")
+    order_id = int(call.data.split("mockup_ok_", 1)[1])
+    order = await db.get_order(order_id) or {}
+
+    await mockup.on_approved(order_id, call.from_user.id)
+    await state.set_state(Funnel.ai_chat)
+    await call.message.answer(
+        msg.MOCKUP_APPROVED.format(next_step=mockup.next_step_text(order)),
+        reply_markup=kb.kb_after_order(),
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data.startswith("mockup_fix_"))
+async def cb_mockup_fix(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    order_id = int(call.data.split("mockup_fix_", 1)[1])
+    await state.set_state(Order.mockup_comment)
+    await state.update_data(mockup_order_id=order_id)
+    await call.message.answer(msg.MOCKUP_ASK_COMMENT, parse_mode="Markdown")
+
+
+@router.message(Order.mockup_comment, F.text)
+async def msg_mockup_comment(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("mockup_order_id")
+    if not order_id:
+        order = await mockup.active_order(message.from_user.id)
+        order_id = order["id"] if order else None
+
+    if order_id:
+        await mockup.on_revision(order_id, message.from_user.id, message.text)
+
+    await state.set_state(Funnel.ai_chat)
+    await message.answer(msg.MOCKUP_COMMENT_SENT, reply_markup=kb.kb_after_order(),
+                         parse_mode="Markdown")
+
+
+async def handle_mockup_reply(message: Message, state: FSMContext) -> bool:
+    """Клиент написал в чат, пока висит неотвеченный макет.
+
+    «всё хорошо» → утверждаем, любой другой текст → считаем правками.
+    Вызывается из общего AI-обработчика до похода в GigaChat.
+    """
+    order = await mockup.active_order(message.from_user.id)
+    if not order:
+        return False
+
+    text = message.text or ""
+    reaction = mockup.read_reaction(text)
+
+    if reaction == "approve":
+        await mockup.on_approved(order["id"], message.from_user.id)
+        await message.answer(
+            msg.MOCKUP_APPROVED.format(next_step=mockup.next_step_text(order)),
+            reply_markup=kb.kb_after_order(),
+            parse_mode="Markdown",
+        )
+        return True
+
+    if reaction == "revision":
+        await mockup.on_revision(order["id"], message.from_user.id, text)
+        await message.answer(msg.MOCKUP_COMMENT_SENT, reply_markup=kb.kb_after_order(),
+                             parse_mode="Markdown")
+        return True
+
+    # Короткая непонятная реплика — уточняем, не гадаем
+    await message.answer(
+        "Подскажите, всё в порядке с макетом или что-то поправить? 😊",
+        reply_markup=kb.kb_mockup_review(order["id"]),
+    )
+    return True
 
 
 @router.callback_query(F.data.startswith("ord_status_"))

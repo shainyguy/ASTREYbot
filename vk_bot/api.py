@@ -66,6 +66,50 @@ class VKAPI:
             params["keyboard"] = keyboard
         await self.call("messages.send", **params)
 
+    async def send_photo(self, peer_id: int, image_bytes: bytes,
+                         text: str = "", keyboard: str = None) -> None:
+        """Отправляет картинку в ВК.
+
+        VK не принимает файл напрямую в messages.send — сначала картинку
+        нужно залить на их сервер и получить attachment-идентификатор.
+        """
+        upload = await self.call("photos.getMessagesUploadServer", peer_id=peer_id)
+        upload_url = upload.get("upload_url")
+        if not upload_url:
+            raise RuntimeError("VK не выдал upload_url для картинки")
+
+        form = aiohttp.FormData()
+        form.add_field("photo", image_bytes, filename="mockup.jpg",
+                       content_type="image/jpeg")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                upload_url, data=form,
+                timeout=aiohttp.ClientTimeout(total=60)
+            ) as resp:
+                uploaded = await resp.json(content_type=None)
+
+        saved = await self.call(
+            "photos.saveMessagesPhoto",
+            photo=uploaded.get("photo"),
+            server=uploaded.get("server"),
+            hash=uploaded.get("hash"),
+        )
+        if not saved:
+            raise RuntimeError("VK не сохранил картинку")
+
+        photo = saved[0] if isinstance(saved, list) else saved
+        attachment = f"photo{photo['owner_id']}_{photo['id']}"
+
+        params = {
+            "peer_id": peer_id,
+            "message": text[:4096],
+            "attachment": attachment,
+            "random_id": random.randint(1, 2 ** 31),
+        }
+        if keyboard:
+            params["keyboard"] = keyboard
+        await self.call("messages.send", **params)
+
     async def resolve_group_id(self, screen_name: str) -> Optional[int]:
         try:
             result = await self.call("utils.resolveScreenName", screen_name=screen_name)

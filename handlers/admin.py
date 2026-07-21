@@ -8,6 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import mockup
 import recent
 import takeover
 from states import Admin, Funnel
@@ -348,6 +349,69 @@ async def cmd_release(message: Message, state: FSMContext):
         msg.ADMIN_TAKEOVER_OFF.format(name=name),
         reply_markup=kb.kb_admin_panel(),
     )
+
+
+# ══════════════════════════════════════════════
+#  ОТПРАВКА МАКЕТА КЛИЕНТУ
+# ══════════════════════════════════════════════
+
+@router.callback_query(F.data.startswith("send_mockup_"))
+async def cb_send_mockup(call: CallbackQuery, state: FSMContext):
+    if not await _check_admin_auth(call):
+        return
+    await call.answer()
+
+    order_id = int(call.data.split("send_mockup_", 1)[1])
+    order = await db.get_order(order_id)
+    if not order:
+        await call.message.answer("Заказ не найден 🤔")
+        return
+
+    name, _ = await takeover.describe_user(order["telegram_id"])
+    await state.set_state(Admin.send_mockup)
+    await state.update_data(mockup_order_id=order_id)
+    await call.message.answer(
+        msg.ADMIN_ASK_MOCKUP.format(order_id=order_id, name=takeover.escape(name)),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Admin.send_mockup, Command("cancel"))
+async def cmd_mockup_cancel(message: Message, state: FSMContext):
+    await state.set_state(Admin.panel)
+    await message.answer("Отменил. Макет не отправлен.", reply_markup=kb.kb_admin_panel())
+
+
+@router.message(Admin.send_mockup, F.photo | F.document)
+async def msg_mockup_upload(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    order_id = data.get("mockup_order_id")
+    order = await db.get_order(order_id) if order_id else None
+    if not order:
+        await state.set_state(Admin.panel)
+        await message.answer("Заказ потерялся — открой карточку заново.")
+        return
+
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    ok, err = await mockup.deliver(bot, order, file_id)
+
+    if not ok:
+        await message.answer(f"❌ Не удалось отправить: {err}")
+        return
+
+    await db.update_order(order_id, status="mockup_sent", nudge_level=0)
+    await state.set_state(Admin.panel)
+    await message.answer(
+        msg.ADMIN_MOCKUP_SENT.format(order_id=order_id),
+        reply_markup=kb.kb_admin_panel(),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Admin.send_mockup)
+async def msg_mockup_wrong_type(message: Message):
+    """Админ прислал текст вместо картинки — не молчим."""
+    await message.answer("Жду картинку макета 🎨\n\nИли /cancel, чтобы отменить.")
 
 
 def _admin_is_relaying(message: Message) -> bool:

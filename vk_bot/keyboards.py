@@ -145,6 +145,13 @@ def kb_order_pay(pay_url: str) -> str:
     ])
 
 
+def kb_mockup_review() -> str:
+    return _keyboard([
+        [_btn("✅ Всё отлично, утверждаю", {"cmd": "mockup_ok"}, "positive")],
+        [_btn("✏️ Нужно поправить", {"cmd": "mockup_fix"})],
+    ])
+
+
 def kb_after_order() -> str:
     return _keyboard([
         [_btn("💬 Задать вопрос", {"cmd": "ask_question"})],

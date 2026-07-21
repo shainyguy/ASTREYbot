@@ -121,6 +121,11 @@ async def handle_message(message: Message) -> None:
         await _show_welcome(message, user_id, db_id)
         return
 
+    # ── Реакция на макет ──
+    if cmd in ("mockup_ok", "mockup_fix") or state == st.MOCKUP_COMMENT:
+        if await _handle_mockup(message, user_id, db_id, state, cmd, raw_text):
+            return
+
     # ── Оформление заказа ──
     if cmd == "order_cancel":
         st.set_state(user_id, st.AI_CHAT)
@@ -359,7 +364,78 @@ async def _handle_budget(message: Message, user_id: int, db_id: int, budget: str
     await _notify_new_lead(user_id, db_id)
 
 
+async def _handle_mockup(message: Message, user_id: int, db_id: int,
+                         state: str, cmd: str, text: str) -> bool:
+    """Реакция клиента на макет. → True, если обработали."""
+    import mockup as mk
+
+    if cmd == "mockup_fix":
+        st.set_state(user_id, st.MOCKUP_COMMENT)
+        await _send(message, _strip_md(msg.MOCKUP_ASK_COMMENT))
+        return True
+
+    order = await mk.active_order(db_id)
+
+    if state == st.MOCKUP_COMMENT:
+        # Заказ мог уже уйти в revision — ищем последний с макетом
+        if not order:
+            d = db.get_db()
+            order = await d.fetch_one(
+                "SELECT * FROM orders WHERE telegram_id = ? "
+                "AND status IN ('mockup_sent', 'revision') ORDER BY id DESC LIMIT 1",
+                {"1": db_id},
+            )
+        if order:
+            await mk.on_revision(order["id"], db_id, text)
+        st.set_state(user_id, st.AI_CHAT)
+        await _send(message, _strip_md(msg.MOCKUP_COMMENT_SENT), vk_kb.kb_after_order())
+        return True
+
+    if not order:
+        return False
+
+    if cmd == "mockup_ok":
+        await mk.on_approved(order["id"], db_id)
+        st.set_state(user_id, st.AI_CHAT)
+        await _send(message, _strip_md(
+            msg.MOCKUP_APPROVED.format(next_step=mk.next_step_text(order))),
+            vk_kb.kb_after_order())
+        return True
+
+    return False
+
+
+async def _handle_mockup_freetext(message: Message, user_id: int, db_id: int,
+                                  text: str) -> bool:
+    """Клиент написал в чат, пока висит неотвеченный макет."""
+    import mockup as mk
+
+    order = await mk.active_order(db_id)
+    if not order:
+        return False
+
+    reaction = mk.read_reaction(text)
+    if reaction == "approve":
+        await mk.on_approved(order["id"], db_id)
+        await _send(message, _strip_md(
+            msg.MOCKUP_APPROVED.format(next_step=mk.next_step_text(order))),
+            vk_kb.kb_after_order())
+        return True
+    if reaction == "revision":
+        await mk.on_revision(order["id"], db_id, text)
+        await _send(message, _strip_md(msg.MOCKUP_COMMENT_SENT), vk_kb.kb_after_order())
+        return True
+
+    await _send(message, "Подскажите, всё в порядке с макетом или что-то поправить? 😊",
+                vk_kb.kb_mockup_review())
+    return True
+
+
 async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> None:
+    # Висит неотвеченный макет — реакция на него важнее ИИ
+    if await _handle_mockup_freetext(message, user_id, db_id, text):
+        return
+
     # FAQ
     faq = _check_faq(text)
     if faq:

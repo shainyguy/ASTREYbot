@@ -34,7 +34,9 @@
       "Bash(PYTHONIOENCODING=utf-8 timeout 90 python -c ' *)",
       "Bash(PYTHONIOENCODING=utf-8 timeout 60 python -c ' *)",
       "Bash(git commit -q -m ' *)",
-      "Bash(git --no-pager log --oneline -1)"
+      "Bash(git --no-pager log --oneline -1)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 110 python \"C:\\\\Users\\\\acer\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-acer-Desktop----------astreybot\\\\46e46487-f295-449c-944d-e38ffb546af0\\\\scratchpad\\\\sim_mockup.py\")",
+      "Bash(git --no-pager show --stat --oneline HEAD)"
     ]
   }
 }

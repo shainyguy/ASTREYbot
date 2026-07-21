@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 
 import database as db
 import notifier
+import keyboards as kb
 import messages as msg
+import takeover
 from config import ADMIN_IDS, WEBSITE_URL
 
 logger = logging.getLogger(__name__)
@@ -51,18 +53,21 @@ async def _check_inactive_users():
         name = row["full_name"] or row["first_name"] or row["username"] or f"ID:{uid}"
         username = row["username"] or ""
 
-        platform = "VK" if uid < 0 else "Telegram"
-        profile_link = f"vk.com/id{abs(uid)}" if uid < 0 else f"tg://user?id={uid}"
+        platform = "ВКонтакте" if uid < 0 else "Telegram"
 
         text = (
-            f"⏰ *Клиент не отвечает {_INACTIVITY_MINUTES}+ минут!*\n\n"
-            f"👤 {name}"
+            f"⏰ *Клиент замолчал — {_INACTIVITY_MINUTES}+ минут тишины*\n\n"
+            f"👤 {takeover.escape(name)}"
             f"{' (@' + username + ')' if username else ''}\n"
-            f"📱 Платформа: {platform}\n"
-            f"🔗 {profile_link}\n\n"
-            f"Возможно, нужно подключиться и уточнить, всё ли в порядке."
+            f"📱 {platform}\n\n"
+            f"Нажми «Взять в работу» — бот замолчит, и клиент получит "
+            f"твои сообщения от имени АСТРЕЙ 👇"
         )
-        await notifier.notify_admins(ADMIN_IDS, text)
+        # Кнопка обязательна: без неё уведомление бесполезно —
+        # подключиться к диалогу было физически нечем
+        markup = kb.kb_notify_admin(uid, username)
+        for admin_id in ADMIN_IDS:
+            await notifier.send_to_admin(admin_id, text, markup)
         await db.update_user(uid, inactivity_notified=1)
         logger.info(f"Inactivity notified for {uid} ({name})")
 
@@ -102,18 +107,13 @@ async def _send_abandoned_reminder(d, cutoff, seconds, label, sent_set, text_tem
                 continue
 
         sent_set.add(uid)
-        platform = row.get("platform", "telegram")
         text = text_template.format(url=WEBSITE_URL)
 
-        try:
-            await notifier.notify_admins(
-                ADMIN_IDS,
-                f"⏰ *Авто-напоминание ({label})* пользователю ID:{uid} отправлено"
-            )
-            if platform == "telegram" and uid > 0:
-                from notifier import _bot
-                if _bot:
-                    await _bot.send_message(uid, text, parse_mode="Markdown")
-                    logger.info(f"Abandoned {label} reminder sent to {uid}")
-        except Exception as e:
-            logger.error(f"Abandoned {label} send error for {uid}: {e}")
+        # Через takeover: он сам выберет TG или ВК. Раньше проверка
+        # platform == "telegram" отсекала всех ВК-клиентов — до них
+        # напоминания не доходили вообще.
+        ok, err = await takeover.send_to_user(uid, text)
+        if ok:
+            logger.info(f"Abandoned {label} reminder sent to {uid}")
+        else:
+            logger.error(f"Abandoned {label} send error for {uid}: {err}")

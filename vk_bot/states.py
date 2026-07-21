@@ -22,6 +22,7 @@ ORDER_DELIVERY = "order_delivery"
 ORDER_POSTCARD = "order_postcard"
 ORDER_POSTCARD_TEXT = "order_postcard_text"
 ORDER_PAY = "order_pay"
+MOCKUP_COMMENT = "mockup_comment"
 
 WAITING_MANAGER = "waiting_manager"
 MANAGER_TAKEOVER = "manager_takeover"

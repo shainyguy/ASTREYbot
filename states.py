@@ -22,6 +22,8 @@ class Order(StatesGroup):
     choose_format = State()
     choose_delivery = State()
     awaiting_payment = State()
+    review_mockup = State()      # клиент смотрит макет
+    mockup_comment = State()     # клиент пишет правки
 
 
 class Reminder(StatesGroup):
@@ -36,3 +38,4 @@ class Admin(StatesGroup):
     takeover = State()
     broadcast = State()
     add_note = State()
+    send_mockup = State()

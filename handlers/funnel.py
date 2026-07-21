@@ -325,9 +325,14 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
         await route_to_manager(user_id, text, message)
         return False
 
+    # Висит неотвеченный макет — «всё хорошо» или правки важнее любого
+    # другого разбора, иначе ответ клиента уйдёт в ИИ и потеряется
+    from handlers.order import detect_buy_intent, begin_order, handle_mockup_reply
+    if await handle_mockup_reply(message, state):
+        return True
+
     # Клиент словами сказал, что готов купить — уводим в оформление,
     # не тратя его время на ещё один круг вопросов к ИИ
-    from handlers.order import detect_buy_intent, begin_order
     if detect_buy_intent(text):
         await begin_order(user_id, message, state)
         return True

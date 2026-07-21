@@ -212,17 +212,31 @@ def kb_after_order() -> InlineKeyboardMarkup:
 def kb_admin_order(order_id: int, user_db_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(
+        text="🎨 Отправить макет",
+        callback_data=f"send_mockup_{order_id}"
+    ))
+    builder.row(InlineKeyboardButton(
         text="🎯 Написать клиенту",
         callback_data=f"takeover_{user_db_id}"
     ))
-    builder.row(InlineKeyboardButton(
-        text="✅ Оплачен",
-        callback_data=f"ord_status_{order_id}_paid"
-    ))
     builder.row(
-        InlineKeyboardButton(text="🎨 Макет отправлен", callback_data=f"ord_status_{order_id}_mockup_sent"),
+        InlineKeyboardButton(text="✅ Оплачен", callback_data=f"ord_status_{order_id}_paid"),
         InlineKeyboardButton(text="🏆 Выполнен", callback_data=f"ord_status_{order_id}_done"),
     )
+    return builder.as_markup()
+
+
+def kb_mockup_review(order_id: int) -> InlineKeyboardMarkup:
+    """Кнопки под макетом у клиента."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(
+        text="✅ Всё отлично, утверждаю",
+        callback_data=f"mockup_ok_{order_id}"
+    ))
+    builder.row(InlineKeyboardButton(
+        text="✏️ Нужно поправить",
+        callback_data=f"mockup_fix_{order_id}"
+    ))
     return builder.as_markup()
 
 

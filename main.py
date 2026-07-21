@@ -19,6 +19,7 @@ import takeover
 import inactivity
 import reminder_scheduler
 import followup_scheduler
+import nudges
 from handlers import user, admin, funnel, order
 
 logging.basicConfig(
@@ -105,6 +106,7 @@ async def main():
     tasks.append(inactivity.run_inactivity_monitor())
     tasks.append(reminder_scheduler.run_reminder_scheduler())
     tasks.append(followup_scheduler.run_followup())
+    tasks.append(nudges.run_nudges())
 
     # ── HTTP API сервер ──
     if config.BOT_API_SECRET:

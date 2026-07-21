@@ -70,17 +70,17 @@ def kb_budget() -> str:
 
 def kb_presentation() -> str:
     return _keyboard([
-        [_link_btn("🛒 Оформить заказ на сайте", WEBSITE_URL)],
+        [_btn("🎁 Оформить заказ", {"cmd": "order_start"}, "positive")],
         [_btn("💬 Задать вопрос", {"cmd": "ask_question"})],
-        [_link_btn("📋 Все товары", WEBSITE_URL)],
+        [_link_btn("👀 Посмотреть дизайны", WEBSITE_URL)],
         _back_btn(),
     ])
 
 
 def kb_ai_chat() -> str:
     return _keyboard([
-        [_link_btn("🛒 Заказать на сайте", WEBSITE_URL)],
-        [_btn("🎁 Подобрать подарок", {"cmd": "start_funnel"}, "positive")],
+        [_btn("🎁 Оформить заказ", {"cmd": "order_start"}, "positive")],
+        [_btn("✨ Подобрать подарок", {"cmd": "start_funnel"})],
         [_btn("🚚 Доставка", {"cmd": "faq_доставка"}),
          _btn("💳 Оплата", {"cmd": "faq_оплата"})],
         [_btn("🛡 Гарантии", {"cmd": "faq_гарантия"}),
@@ -105,6 +105,43 @@ def kb_reminder_saved() -> str:
     return _keyboard([
         [_btn("🎁 Выбрать подарок", {"cmd": "start_funnel"}, "positive")],
         [_btn("📋 Меню", {"cmd": "restart"})],
+    ])
+
+
+def kb_order_cancel() -> str:
+    return _keyboard([
+        [_btn("✖️ Отменить оформление", {"cmd": "order_cancel"})],
+    ])
+
+
+def kb_order_format() -> str:
+    return _keyboard([
+        [_btn("⚡ Электронно — 590₽", {"cmd": "order_fmt", "fmt": "electronic"}, "positive")],
+        [_btn("🖼 А4 в рамке — 2 190₽", {"cmd": "order_fmt", "fmt": "a4_frame"})],
+        [_btn("🖼 А3 в рамке — 2 690₽", {"cmd": "order_fmt", "fmt": "a3_frame"})],
+        [_btn("🤔 Помогите выбрать", {"cmd": "order_fmt", "fmt": "help"})],
+    ], one_time=True)
+
+
+def kb_postcard() -> str:
+    return _keyboard([
+        [_btn("💌 Добавить открытку — 190₽", {"cmd": "postcard_yes"}, "positive")],
+        [_btn("Спасибо, без неё", {"cmd": "postcard_no"})],
+    ], one_time=True)
+
+
+def kb_order_pay(pay_url: str) -> str:
+    return _keyboard([
+        [_link_btn("💳 Оплатить заказ", pay_url)],
+        [_btn("✅ Я оплатил", {"cmd": "order_paid"}, "positive")],
+        [_btn("✏️ Что-то поправить", {"cmd": "call_manager"})],
+    ])
+
+
+def kb_after_order() -> str:
+    return _keyboard([
+        [_btn("💬 Задать вопрос", {"cmd": "ask_question"})],
+        [_btn("⏰ Напомнить о важной дате", {"cmd": "reminder_start"})],
     ])
 
 

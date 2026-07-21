@@ -13,6 +13,16 @@ class Funnel(StatesGroup):
     completed = State()
 
 
+class Order(StatesGroup):
+    """Сбор заказа: дата → место → фраза → дизайн → формат → оплата."""
+    event_date = State()
+    event_place = State()
+    phrase = State()
+    design = State()
+    choose_format = State()
+    awaiting_payment = State()
+
+
 class Reminder(StatesGroup):
     set_event = State()
     set_date = State()

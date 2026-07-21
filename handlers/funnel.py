@@ -12,6 +12,7 @@ import gigachat as gc
 import messages as msg
 import keyboards as kb
 import notifier
+import recent
 import takeover
 from states import Funnel, Reminder
 from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL, PRODUCT_IMAGES
@@ -26,7 +27,7 @@ gigachat_client: gc.GigaChatClient = None
 _nudge_timers: dict[int, asyncio.Task] = {}
 _nudge_count: dict[int, int] = {}
 MAX_NUDGES = 3
-NUDGE_INTERVALS = [45, 90]  # сек между нудж 1→2, 2→3
+NUDGE_INTERVALS = [180, 600]  # сек тишины до 1-го и до 2-го напоминания
 
 
 def _cancel_nudge_timers(user_id: int):
@@ -40,10 +41,7 @@ async def _delayed_nudge(user_id: int, chat_id: int, bot: Bot):
     stage = _nudge_count.get(user_id, 0)
     if stage >= MAX_NUDGES:
         return
-    interval_idx = stage - 1  # после 1-го нуджа ждём 45с, после 2-го — 90с
-    if interval_idx < 0 or interval_idx >= len(NUDGE_INTERVALS):
-        return
-    delay = NUDGE_INTERVALS[interval_idx]
+    delay = NUDGE_INTERVALS[min(stage, len(NUDGE_INTERVALS) - 1)]
     await asyncio.sleep(delay)
     if user_id not in _nudge_timers:
         return
@@ -73,18 +71,14 @@ async def _update_bot_msg_time(user_id: int) -> None:
 
 
 async def _maybe_nudge_to_order(user_id: int, message: Message) -> None:
-    """Подталкивает к заказу. Запускает цепочку из MAX_NUDGES нуджей с задержками."""
-    count = _nudge_count.get(user_id, 0) + 1
-    _nudge_count[user_id] = count
-    nudge_idx = (count - 1) % len(msg.ORDER_NUDGES)
-    nudge_text = msg.ORDER_NUDGES[nudge_idx]
-    await message.answer(
-        nudge_text.format(url=WEBSITE_URL),
-        reply_markup=kb.kb_ai_chat(),
-        parse_mode="Markdown"
-    )
+    """Взводит таймер подталкивания — сработает, только если клиент замолчал.
+
+    Раньше нудж прилетал сразу после КАЖДОГО ответа ИИ: задал три вопроса —
+    три раза «купи». Теперь бот сначала спокойно отвечает, и напоминает
+    о заказе, лишь когда собеседник пропал.
+    """
     _cancel_nudge_timers(user_id)
-    if count < MAX_NUDGES:
+    if _nudge_count.get(user_id, 0) < MAX_NUDGES:
         _nudge_timers[user_id] = asyncio.create_task(
             _delayed_nudge(user_id, message.chat.id, message.bot)
         )
@@ -324,18 +318,25 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
     text = message.text or ""
     _cancel_nudge_timers(user_id)
 
-    await db.log_message(user_id, "incoming", text)
+    recent.remember(user_id, "incoming", text)
 
     user = await db.get_user(user_id)
     if user and user.get("stage") in ("manager_takeover", "waiting_manager"):
         await route_to_manager(user_id, text, message)
         return False
 
+    # Клиент словами сказал, что готов купить — уводим в оформление,
+    # не тратя его время на ещё один круг вопросов к ИИ
+    from handlers.order import detect_buy_intent, begin_order
+    if detect_buy_intent(text):
+        await begin_order(user_id, message, state)
+        return True
+
     await bot.send_chat_action(message.chat.id, "typing")
 
     faq_answer = _check_faq(text)
     if faq_answer:
-        await db.log_message(user_id, "outgoing", faq_answer)
+        recent.remember(user_id, "outgoing", faq_answer)
         await message.answer(faq_answer, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
         await _update_bot_msg_time(user_id)
         await _maybe_nudge_to_order(user_id, message)
@@ -353,7 +354,7 @@ async def process_ai_message(message: Message, state: FSMContext, bot: Bot) -> b
         await db.update_user(user_id, ai_confusion_count=0)
         await _update_bot_msg_time(user_id)
 
-        await db.log_message(user_id, "outgoing", ai_response)
+        recent.remember(user_id, "outgoing", ai_response)
         await message.answer(ai_response, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
         await _maybe_nudge_to_order(user_id, message)
 
@@ -392,7 +393,7 @@ async def msg_photo(message: Message, state: FSMContext, bot: Bot):
 
     await bot.send_chat_action(message.chat.id, "typing")
     await state.set_state(Funnel.ai_chat)
-    await db.log_message(user_id, "incoming", "[Фото]")
+    recent.remember(user_id, "incoming", "[Фото]")
 
     # Скачиваем фото
     try:
@@ -415,7 +416,7 @@ async def msg_photo(message: Message, state: FSMContext, bot: Bot):
             gc.add_to_history(user_id, "assistant", ai_response)
             await db.update_user(user_id, ai_confusion_count=0)
             await _update_bot_msg_time(user_id)
-            await db.log_message(user_id, "outgoing", ai_response)
+            recent.remember(user_id, "outgoing", ai_response)
             await message.answer(ai_response, reply_markup=kb.kb_ai_chat(), parse_mode="Markdown")
             await _maybe_nudge_to_order(user_id, message)
             return
@@ -487,7 +488,7 @@ _waiting_acks: dict[int, int] = {}
 
 async def route_to_manager(user_id: int, text: str, message: Message) -> None:
     """Клиент в режиме менеджера: либо релеим ведущему админу, либо зовём свободного."""
-    await db.log_message(user_id, "incoming", text)
+    recent.remember(user_id, "incoming", text)
 
     if await takeover.relay_to_admin(user_id, text):
         return

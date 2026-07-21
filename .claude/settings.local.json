@@ -20,7 +20,12 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"import messages\")",
+      "Bash(python -m compileall -q .)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -)",
+      "Bash(python -m pyflakes handlers/order.py recent.py takeover.py vk_bot/funnel.py)"
     ]
   }
 }

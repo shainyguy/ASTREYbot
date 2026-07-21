@@ -8,6 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import notifier
+import recent
 import takeover
 from config import ADMIN_IDS, AI_CONFUSION_THRESHOLD, WEBSITE_URL
 from . import states as st
@@ -73,7 +74,7 @@ async def handle_message(message: Message) -> None:
 
     # Регистрируем / обновляем пользователя в БД
     await _ensure_user(message, user_id, db_id)
-    await db.log_message(db_id, "incoming", raw_text or str(payload))
+    recent.remember(db_id, "incoming", raw_text or str(payload))
 
     # ── Режим менеджера ──
     if state in (st.MANAGER_TAKEOVER, st.WAITING_MANAGER):
@@ -112,6 +113,27 @@ async def handle_message(message: Message) -> None:
     # ── Рестарт / /start ──
     if raw_text.lower() in ("/start", "начать", "старт", "привет", "hi", "hello") or cmd == "restart":
         await _show_welcome(message, user_id, db_id)
+        return
+
+    # ── Оформление заказа ──
+    if cmd == "order_cancel":
+        st.set_state(user_id, st.AI_CHAT)
+        await db.update_user(db_id, stage="ai_chat")
+        await _send(message, _strip_md(msg.ORDER_CANCELLED), vk_kb.kb_ai_chat())
+        return
+
+    if cmd == "order_start":
+        await _start_order(message, user_id, db_id)
+        return
+
+    if state in _ORDER_STATES or cmd in ("order_fmt", "postcard_yes", "postcard_no", "order_paid"):
+        await _handle_order(message, user_id, db_id, state, cmd, payload, raw_text)
+        return
+
+    # Клиент словами сказал, что готов купить
+    from handlers.order import detect_buy_intent
+    if state in (st.AI_CHAT, st.PRESENTATION, st.WELCOME) and detect_buy_intent(raw_text):
+        await _start_order(message, user_id, db_id)
         return
 
     # ── Напоминание: старт ──
@@ -334,7 +356,7 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
     # FAQ
     faq = _check_faq(text)
     if faq:
-        await db.log_message(db_id, "outgoing", faq)
+        recent.remember(db_id, "outgoing", faq)
         await _update_bot_msg_time(db_id)
         await _send(message, _strip_md(faq), vk_kb.kb_ai_chat())
         await _maybe_nudge_to_order(user_id, db_id, message)
@@ -352,7 +374,7 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
         await db.update_user(db_id, ai_confusion_count=0)
         await _update_bot_msg_time(db_id)
         clean = _strip_md(ai_response)
-        await db.log_message(db_id, "outgoing", clean)
+        recent.remember(db_id, "outgoing", clean)
         await _send(message, clean, vk_kb.kb_ai_chat())
         await _maybe_nudge_to_order(user_id, db_id, message)
 
@@ -416,6 +438,175 @@ async def _handle_get_phone(message: Message, user_id: int, db_id: int, text: st
         await _notify_contact(user_id, db_id, name, phone, occasion, recipient, budget)
     else:
         await _send(message, "📱 Введи корректный номер (например: +79991234567)\n\nИли напиши «Пропустить»")
+
+
+# ══════════════════════════════════════════════
+#  ОФОРМЛЕНИЕ ЗАКАЗА
+# ══════════════════════════════════════════════
+
+_ORDER_STATES = (
+    st.ORDER_DATE, st.ORDER_PLACE, st.ORDER_PHRASE, st.ORDER_DESIGN,
+    st.ORDER_FORMAT, st.ORDER_POSTCARD, st.ORDER_POSTCARD_TEXT, st.ORDER_PAY,
+)
+
+POSTCARD_PRICE = 190
+
+
+async def _start_order(message: Message, user_id: int, db_id: int) -> None:
+    st.set_state(user_id, st.ORDER_DATE)
+    await db.update_user(db_id, stage="ordering")
+    await _send(message, _strip_md(msg.ORDER_START), vk_kb.kb_order_cancel())
+
+
+async def _handle_order(message: Message, user_id: int, db_id: int,
+                        state: str, cmd: str, payload: dict, text: str) -> None:
+    """Пошаговый сбор заказа во ВКонтакте — зеркалит сценарий Telegram."""
+
+    if state == st.ORDER_DATE:
+        st.update_data(user_id, event_date=text)
+        st.set_state(user_id, st.ORDER_PLACE)
+        await _send(message, _strip_md(msg.ORDER_ASK_PLACE), vk_kb.kb_order_cancel())
+        return
+
+    if state == st.ORDER_PLACE:
+        st.update_data(user_id, event_place=text)
+        st.set_state(user_id, st.ORDER_PHRASE)
+        await _send(message, _strip_md(msg.ORDER_ASK_PHRASE), vk_kb.kb_order_cancel())
+        return
+
+    if state == st.ORDER_PHRASE:
+        st.update_data(user_id, phrase=text)
+        st.set_state(user_id, st.ORDER_DESIGN)
+        await _send(message, _strip_md(msg.ORDER_ASK_DESIGN), vk_kb.kb_order_cancel())
+        return
+
+    if state == st.ORDER_DESIGN:
+        if not text:
+            await _send(message, _strip_md(msg.ORDER_DESIGN_NOT_PHOTO))
+            return
+        st.update_data(user_id, design=text)
+        st.set_state(user_id, st.ORDER_FORMAT)
+        await _send(message, _strip_md(msg.ORDER_ASK_FORMAT), vk_kb.kb_order_format())
+        return
+
+    if cmd == "order_fmt":
+        fmt = payload.get("fmt", "electronic")
+        if fmt == "help":
+            await _send(message,
+                "Подскажу 😊\n\n"
+                "⚡ Электронно — если нужно срочно или распечатаете сами.\n"
+                "🖼 А4 в рамке — универсально, хорошо смотрится на полке.\n"
+                "🖼 А3 в рамке — если это главный подарок и хочется на стену.\n\n"
+                "Чаще всего берут А4 — золотая середина.",
+                vk_kb.kb_order_format())
+            return
+        st.update_data(user_id, order_format=fmt)
+        st.set_state(user_id, st.ORDER_POSTCARD)
+        await _send(message, _strip_md(msg.POSTCARD_UPSELL), vk_kb.kb_postcard())
+        return
+
+    if cmd == "postcard_yes":
+        st.update_data(user_id, postcard=1)
+        st.set_state(user_id, st.ORDER_POSTCARD_TEXT)
+        await _send(message, _strip_md(msg.POSTCARD_ASK_TEXT))
+        return
+
+    if cmd == "postcard_no":
+        st.update_data(user_id, postcard=0)
+        await _finish_order(message, user_id, db_id)
+        return
+
+    if state == st.ORDER_POSTCARD_TEXT:
+        st.update_data(user_id, postcard_text=text)
+        await _send(message, _strip_md(msg.POSTCARD_ADDED))
+        await _finish_order(message, user_id, db_id)
+        return
+
+    if cmd == "order_paid":
+        await _confirm_paid(message, user_id, db_id)
+        return
+
+    # На шаге оплаты клиент просто что-то спрашивает — отвечаем как обычно
+    if state == st.ORDER_PAY:
+        await _handle_ai(message, user_id, db_id, text)
+
+
+async def _finish_order(message: Message, user_id: int, db_id: int) -> None:
+    from config import format_info
+    from handlers.order import _notify_admin_order
+
+    data = st.get_data(user_id)
+    fmt_key = data.get("order_format", "electronic")
+    fmt_name, price, pay_url = format_info(fmt_key)
+
+    postcard = int(data.get("postcard") or 0)
+    amount = price + (POSTCARD_PRICE if postcard else 0)
+    postcard_line = "💌 Открытка: да\n" if postcard else ""
+
+    user = await db.get_user(db_id) or {}
+    order_id = await db.create_order(
+        db_id,
+        platform="vk",
+        product="Карта звёздного неба",
+        format=fmt_key,
+        event_date=data.get("event_date", ""),
+        event_place=data.get("event_place", ""),
+        phrase=data.get("phrase", ""),
+        design=data.get("design", ""),
+        postcard=postcard,
+        full_name=user.get("full_name") or user.get("first_name") or "",
+        phone=user.get("phone") or "",
+        amount=amount,
+        status="awaiting_payment",
+    )
+    st.update_data(user_id, order_id=order_id)
+    st.set_state(user_id, st.ORDER_PAY)
+
+    summary = msg.ORDER_SUMMARY.format(
+        event_date=data.get("event_date", "—"),
+        event_place=data.get("event_place", "—"),
+        phrase=data.get("phrase", "—"),
+        design=data.get("design", "—"),
+        format_name=fmt_name,
+        postcard_line=postcard_line,
+        amount=amount,
+    )
+    await _send(message, _strip_md(summary), vk_kb.kb_order_pay(pay_url))
+
+    delivery = ("Присылаем готовый PDF на почту — в течение часа после утверждения ⚡"
+                if fmt_key == "electronic"
+                else "Печатаем, оформляем в рамку и отправляем — 3-7 рабочих дней по России 🚚")
+    await _send(message, _strip_md(msg.ORDER_PAID_HINT.format(delivery_line=delivery)))
+
+    await _notify_admin_order(order_id, db_id)
+
+
+async def _confirm_paid(message: Message, user_id: int, db_id: int) -> None:
+    import keyboards as tg_kb
+
+    data = st.get_data(user_id)
+    order_id = data.get("order_id")
+    if order_id:
+        await db.update_order(order_id, status="paid")
+
+    user = await db.get_user(db_id) or {}
+    name = user.get("full_name") or user.get("first_name") or "друг"
+
+    st.set_state(user_id, st.AI_CHAT)
+    await db.update_user(db_id, stage="ai_chat")
+    await _send(message, _strip_md(msg.ORDER_THANKS.format(name=name)), vk_kb.kb_after_order())
+
+    order = await db.get_order(order_id) if order_id else {}
+    for admin_id in ADMIN_IDS:
+        await notifier.send_to_admin(
+            admin_id,
+            msg.ADMIN_ORDER_PAID.format(
+                order_id=order_id or "—",
+                name=takeover.escape(name),
+                amount=(order or {}).get("amount", "—"),
+            ),
+            tg_kb.kb_admin_order(order_id or 0, db_id),
+        )
 
 
 # ══════════════════════════════════════════════

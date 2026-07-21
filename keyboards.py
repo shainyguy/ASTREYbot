@@ -75,20 +75,17 @@ def kb_budget() -> InlineKeyboardMarkup:
 
 def kb_presentation(budget: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(
-        text="🛒 Оформить заказ на сайте",
-        url=WEBSITE_URL
-    ))
+    builder.row(InlineKeyboardButton(text="🎁 Оформить заказ", callback_data="order_start"))
     builder.row(InlineKeyboardButton(text="💬 Задать вопрос", callback_data="ask_question"))
-    builder.row(InlineKeyboardButton(text="📋 Посмотреть все товары", url=WEBSITE_URL))
+    builder.row(InlineKeyboardButton(text="👀 Посмотреть дизайны", url=WEBSITE_URL))
     _add_back(builder)
     return builder.as_markup()
 
 
 def kb_ai_chat() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🛒 Заказать на сайте", url=WEBSITE_URL))
-    builder.row(InlineKeyboardButton(text="🎁 Подобрать подарок", callback_data="start_funnel"))
+    builder.row(InlineKeyboardButton(text="🎁 Оформить заказ", callback_data="order_start"))
+    builder.row(InlineKeyboardButton(text="✨ Подобрать подарок", callback_data="start_funnel"))
     builder.row(
         InlineKeyboardButton(text="🚚 Доставка", callback_data="faq_доставка"),
         InlineKeyboardButton(text="💳 Оплата", callback_data="faq_оплата"),
@@ -136,6 +133,86 @@ def kb_my_reminders(reminders: list) -> InlineKeyboardMarkup:
         ))
     builder.row(InlineKeyboardButton(text="➕ Добавить напоминание", callback_data="reminder_start"))
     builder.row(InlineKeyboardButton(text="📋 Меню", callback_data="restart"))
+    return builder.as_markup()
+
+
+# ══════════════════════════════════════════════
+#  ОФОРМЛЕНИЕ ЗАКАЗА
+# ══════════════════════════════════════════════
+
+def kb_start_order() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🎁 Оформить заказ", callback_data="order_start"))
+    builder.row(InlineKeyboardButton(text="💬 Сначала спрошу", callback_data="ask_question"))
+    return builder.as_markup()
+
+
+def kb_order_cancel() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✖️ Отменить оформление", callback_data="order_cancel"))
+    return builder.as_markup()
+
+
+def kb_order_format() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⚡ Электронно — 590₽", callback_data="order_fmt_electronic"))
+    builder.row(InlineKeyboardButton(text="🖼 А4 в рамке — 2 190₽", callback_data="order_fmt_a4_frame"))
+    builder.row(InlineKeyboardButton(text="🖼 А3 в рамке — 2 690₽", callback_data="order_fmt_a3_frame"))
+    builder.row(InlineKeyboardButton(text="🤔 Помогите выбрать", callback_data="order_fmt_help"))
+    return builder.as_markup()
+
+
+def kb_order_pay(pay_url: str, order_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💳 Оплатить заказ", url=pay_url))
+    builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"order_paid_{order_id}"))
+    builder.row(InlineKeyboardButton(text="✏️ Что-то поправить", callback_data="order_edit"))
+    return builder.as_markup()
+
+
+def kb_postcard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💌 Добавить открытку — 190₽", callback_data="postcard_yes"))
+    builder.row(InlineKeyboardButton(text="Спасибо, без неё", callback_data="postcard_no"))
+    return builder.as_markup()
+
+
+def kb_order_edit() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📅 Дату", callback_data="order_re_date"),
+        InlineKeyboardButton(text="🌍 Место", callback_data="order_re_place"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="✍️ Надпись", callback_data="order_re_phrase"),
+        InlineKeyboardButton(text="🎨 Оформление", callback_data="order_re_design"),
+    )
+    builder.row(InlineKeyboardButton(text="🎁 Формат", callback_data="order_re_format"))
+    builder.row(InlineKeyboardButton(text="👨‍💼 Позвать менеджера", callback_data="call_manager"))
+    return builder.as_markup()
+
+
+def kb_after_order() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💬 Задать вопрос", callback_data="ask_question"))
+    builder.row(InlineKeyboardButton(text="⏰ Напомнить о важной дате", callback_data="reminder_start"))
+    return builder.as_markup()
+
+
+def kb_admin_order(order_id: int, user_db_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(
+        text="🎯 Написать клиенту",
+        callback_data=f"takeover_{user_db_id}"
+    ))
+    builder.row(InlineKeyboardButton(
+        text="✅ Оплачен",
+        callback_data=f"ord_status_{order_id}_paid"
+    ))
+    builder.row(
+        InlineKeyboardButton(text="🎨 Макет отправлен", callback_data=f"ord_status_{order_id}_mockup_sent"),
+        InlineKeyboardButton(text="🏆 Выполнен", callback_data=f"ord_status_{order_id}_done"),
+    )
     return builder.as_markup()
 
 

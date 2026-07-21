@@ -19,7 +19,7 @@ import takeover
 import inactivity
 import reminder_scheduler
 import followup_scheduler
-from handlers import user, admin, funnel
+from handlers import user, admin, funnel, order
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +68,7 @@ async def main():
 
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)
+    dp.include_router(order.router)   # до funnel: шаги заказа важнее общего AI-чата
     dp.include_router(funnel.router)
     dp.include_router(user.router)
 

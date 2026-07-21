@@ -8,6 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import recent
 import takeover
 from states import Admin, Funnel
 from config import ADMIN_PASSWORD, ADMIN_IDS
@@ -374,24 +375,23 @@ async def admin_takeover_message(message: Message):
 
     ok, err = await takeover.send_to_user(user_id, text)
     if ok:
-        await db.log_message(user_id, "outgoing_admin", text)
+        recent.remember(user_id, "outgoing_admin", text)
     else:
         await message.answer(f"❌ Не доставлено: {err}")
 
 
 async def _recent_dialog(user_id: int, limit: int = 6) -> str:
-    """Последние реплики диалога — чтобы менеджер сразу видел контекст."""
-    try:
-        rows = await db.get_user_messages(user_id, limit=limit)
-    except Exception:
-        return ""
+    """Последние реплики диалога — чтобы менеджер сразу видел контекст.
+
+    Берём из памяти (recent.py): переписку в базе больше не храним.
+    """
+    rows = recent.recent(user_id, limit)
     if not rows:
         return ""
     lines = ["🗂 *Последние сообщения:*", ""]
-    for row in reversed(rows):
-        who = "👤" if row.get("direction") == "incoming" else "🤖"
-        body = (row.get("text") or "")[:150]
-        lines.append(f"{who} {takeover.escape(body)}")
+    for direction, body in rows:
+        who = "👤" if direction == "incoming" else "🤖"
+        lines.append(f"{who} {takeover.escape(body[:150])}")
     return "\n".join(lines)
 
 

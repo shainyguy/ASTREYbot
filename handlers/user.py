@@ -8,6 +8,7 @@ import database as db
 import gigachat as gc
 import messages as msg
 import keyboards as kb
+import recent
 import takeover
 from states import Funnel
 
@@ -24,7 +25,7 @@ async def cmd_start(message: Message, state: FSMContext):
         first_name=user.first_name,
         last_name=user.last_name,
     )
-    await db.log_message(user.id, "incoming", "/start")
+    recent.remember(user.id, "incoming", "/start")
     gc.clear_history(user.id)
 
     # Deep link: /start subscribe_42
@@ -146,7 +147,7 @@ async def cmd_menu(message: Message, state: FSMContext):
 @router.message(Funnel.welcome)
 async def msg_welcome_free(message: Message, state: FSMContext):
     text = message.text or ""
-    await db.log_message(message.from_user.id, "incoming", text)
+    recent.remember(message.from_user.id, "incoming", text)
 
     if takeover.admin_of(message.from_user.id) is not None:
         await takeover.relay_to_admin(message.from_user.id, text)
@@ -164,7 +165,7 @@ async def catch_all_messages(message: Message, state: FSMContext):
     current_state = await state.get_state()
 
     if takeover.admin_of(user_id) is not None:
-        await db.log_message(user_id, "incoming", message.text)
+        recent.remember(user_id, "incoming", message.text)
         if await takeover.relay_to_admin(user_id, message.text):
             return
 

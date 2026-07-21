@@ -24,6 +24,31 @@ ADMIN_VK_IDS: List[int] = [
 ]
 
 WEBSITE_URL: str = "https://astreys.ru"
+
+# ── Форматы товара и ссылки на оплату (Robokassa) ──
+# key → (название, цена, ссылка на счёт)
+ORDER_FORMATS: dict = {
+    "electronic": (
+        "Электронный (PDF)",
+        590,
+        "https://auth.robokassa.ru/merchant/Invoice/i0627GJwwUWSyvqbro1h-w",
+    ),
+    "a4_frame": (
+        "А4 в рамке",
+        2190,
+        "https://auth.robokassa.ru/merchant/Invoice/NWCLs0grvUKkPFlV8OyIcg",
+    ),
+    "a3_frame": (
+        "А3 в рамке",
+        2690,
+        "https://auth.robokassa.ru/merchant/Invoice/c09X0IUloEyPkRbt6L-CPw",
+    ),
+}
+
+
+def format_info(key: str) -> tuple:
+    """→ (название, цена, ссылка на оплату)"""
+    return ORDER_FORMATS.get(key, ORDER_FORMATS["electronic"])
 HTTP_PORT: int = int(os.getenv("PORT", "8080"))
 BOT_API_SECRET: str = os.getenv("BOT_API_SECRET", "")
 

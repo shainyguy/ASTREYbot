@@ -2,7 +2,10 @@ import os
 import json
 import re
 import asyncio
+import logging
 from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -146,12 +149,23 @@ async def init_db():
             )
         """)
         await _DB.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
                 telegram_id BIGINT NOT NULL,
-                direction TEXT NOT NULL,
-                text TEXT NOT NULL,
-                created_at TEXT DEFAULT NOW()
+                platform TEXT DEFAULT 'telegram',
+                product TEXT,
+                format TEXT,
+                event_date TEXT,
+                event_place TEXT,
+                phrase TEXT,
+                design TEXT,
+                postcard INTEGER DEFAULT 0,
+                full_name TEXT,
+                phone TEXT,
+                amount INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'awaiting_payment',
+                created_at TEXT DEFAULT NOW(),
+                updated_at TEXT DEFAULT NOW()
             )
         """)
         await _DB.execute("""
@@ -240,12 +254,23 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER NOT NULL,
-                direction TEXT NOT NULL,
-                text TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
+                platform TEXT DEFAULT 'telegram',
+                product TEXT,
+                format TEXT,
+                event_date TEXT,
+                event_place TEXT,
+                phrase TEXT,
+                design TEXT,
+                postcard INTEGER DEFAULT 0,
+                full_name TEXT,
+                phone TEXT,
+                amount INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'awaiting_payment',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,6 +334,14 @@ async def init_db():
             await _DB.execute("ALTER TABLE leads ADD COLUMN platform TEXT DEFAULT 'telegram'")
         except Exception:
             pass
+
+    # Архив переписки больше не ведём — последние реплики живут в памяти
+    # (recent.py). Работает и для PostgreSQL, и для SQLite.
+    try:
+        await _DB.execute("DROP TABLE IF EXISTS messages")
+        logger.info("Таблица messages удалена — переписка не хранится")
+    except Exception as e:
+        logger.warning(f"messages drop: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -387,22 +420,62 @@ async def update_last_bot_message(telegram_id: int) -> None:
 
 
 # ─────────────────────────────────────────────
-#  MESSAGES
+#  ЗАКАЗЫ
 # ─────────────────────────────────────────────
 
-async def log_message(telegram_id: int, direction: str, text: str) -> None:
+ORDER_FIELDS = (
+    "platform", "product", "format", "event_date", "event_place",
+    "phrase", "design", "postcard", "full_name", "phone", "amount", "status",
+)
+
+
+async def create_order(telegram_id: int, **kwargs) -> int:
+    fields = ["telegram_id"] + [k for k in kwargs if k in ORDER_FIELDS]
+    values = {"1": telegram_id}
+    for i, key in enumerate(fields[1:], start=2):
+        values[str(i)] = kwargs[key]
+    placeholders = ", ".join("?" for _ in fields)
+    sql = f"INSERT INTO orders ({', '.join(fields)}) VALUES ({placeholders}){_returning_id()}"
+
+    if _DB.is_pg:
+        row = await _DB.fetch_one(sql, values)
+        return row["id"] if row else 0
+    await _DB.execute(sql, values)
+    row = await _DB.fetch_one(
+        "SELECT id FROM orders WHERE telegram_id = ? ORDER BY id DESC LIMIT 1",
+        {"1": telegram_id}
+    )
+    return row["id"] if row else 0
+
+
+async def update_order(order_id: int, **kwargs) -> None:
+    updates = {k: v for k, v in kwargs.items() if k in ORDER_FIELDS}
+    if not updates:
+        return
+    sets, values = [], {}
+    for i, (key, val) in enumerate(updates.items(), start=1):
+        sets.append(f"{key} = ?")
+        values[str(i)] = val
+    values[str(len(updates) + 1)] = order_id
     await _DB.execute(
-        "INSERT INTO messages (telegram_id, direction, text) VALUES (?, ?, ?)",
-        {"1": telegram_id, "2": direction, "3": text[:4000]}
+        f"UPDATE orders SET {', '.join(sets)}, updated_at = {_now()} WHERE id = ?",
+        values
     )
 
 
-async def get_user_messages(telegram_id: int, limit: int = 20) -> List[Dict]:
-    rows = await _DB.fetch_all(
-        "SELECT * FROM messages WHERE telegram_id = ? ORDER BY created_at DESC LIMIT ?",
-        {"1": telegram_id, "2": limit}
+async def get_order(order_id: int) -> Optional[Dict]:
+    return await _DB.fetch_one("SELECT * FROM orders WHERE id = ?", {"1": order_id})
+
+
+async def get_orders(status: str = None, limit: int = 20) -> List[Dict]:
+    if status and status != "all":
+        return await _DB.fetch_all(
+            "SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?",
+            {"1": status, "2": limit}
+        )
+    return await _DB.fetch_all(
+        "SELECT * FROM orders ORDER BY id DESC LIMIT ?", {"1": limit}
     )
-    return list(reversed(rows))
 
 
 # ─────────────────────────────────────────────
@@ -635,7 +708,7 @@ DUMP_FILE = "astreybot_dump.json"
 
 async def export_data() -> str:
     data = {}
-    for table in ["users", "messages", "leads", "admin_takeovers", "broadcasts", "subscriptions"]:
+    for table in ["users", "orders", "leads", "admin_takeovers", "broadcasts", "subscriptions"]:
         rows = await _DB.fetch_all(f"SELECT * FROM {table}")
         data[table] = rows
     with open(DUMP_FILE, "w", encoding="utf-8") as f:

@@ -25,30 +25,40 @@ ADMIN_VK_IDS: List[int] = [
 
 WEBSITE_URL: str = "https://astreys.ru"
 
-# ── Форматы товара и ссылки на оплату (Robokassa) ──
-# key → (название, цена, ссылка на счёт)
+# ── Форматы товара ──
+# key → (название, цена, ссылка на счёт для базовой цены)
+_PAY_ELECTRONIC = "https://auth.robokassa.ru/merchant/Invoice/i0627GJwwUWSyvqbro1h-w"
+_PAY_A4 = "https://auth.robokassa.ru/merchant/Invoice/NWCLs0grvUKkPFlV8OyIcg"
+_PAY_A3 = "https://auth.robokassa.ru/merchant/Invoice/c09X0IUloEyPkRbt6L-CPw"
+
 ORDER_FORMATS: dict = {
-    "electronic": (
-        "Электронный (PDF)",
-        590,
-        "https://auth.robokassa.ru/merchant/Invoice/i0627GJwwUWSyvqbro1h-w",
-    ),
-    "a4_frame": (
-        "А4 в рамке",
-        2190,
-        "https://auth.robokassa.ru/merchant/Invoice/NWCLs0grvUKkPFlV8OyIcg",
-    ),
-    "a3_frame": (
-        "А3 в рамке",
-        2690,
-        "https://auth.robokassa.ru/merchant/Invoice/c09X0IUloEyPkRbt6L-CPw",
-    ),
+    "electronic": ("Электронный (PDF)", 590, _PAY_ELECTRONIC),
+    "a4_frame": ("А4 в рамке", 2190, _PAY_A4),
+    "a3_frame": ("А3 в рамке", 2490, _PAY_A3),
 }
 
+# ── Доставка (только для форматов в рамке) ──
+# key → (название, цена)
+DELIVERY_OPTIONS: dict = {
+    "pickup": ("Самовывоз, м. Сокольники", 0),
+    "post": ("Почта России", 500),
+}
+
+POSTCARD_PRICE: int = 190
 
 def format_info(key: str) -> tuple:
-    """→ (название, цена, ссылка на оплату)"""
+    """→ (название, цена, ссылка на оплату)
+
+    По ссылке клиент платит только за саму карту — счета Robokassa
+    выставлены на фиксированную сумму. Открытка и платная доставка идут
+    доплатой, о ней менеджер договаривается отдельно.
+    """
     return ORDER_FORMATS.get(key, ORDER_FORMATS["electronic"])
+
+
+def delivery_info(key: str) -> tuple:
+    """→ (название, цена)"""
+    return DELIVERY_OPTIONS.get(key, ("", 0))
 HTTP_PORT: int = int(os.getenv("PORT", "8080"))
 BOT_API_SECRET: str = os.getenv("BOT_API_SECRET", "")
 

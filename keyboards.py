@@ -157,8 +157,15 @@ def kb_order_format() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="⚡ Электронно — 590₽", callback_data="order_fmt_electronic"))
     builder.row(InlineKeyboardButton(text="🖼 А4 в рамке — 2 190₽", callback_data="order_fmt_a4_frame"))
-    builder.row(InlineKeyboardButton(text="🖼 А3 в рамке — 2 690₽", callback_data="order_fmt_a3_frame"))
+    builder.row(InlineKeyboardButton(text="🖼 А3 в рамке — 2 490₽", callback_data="order_fmt_a3_frame"))
     builder.row(InlineKeyboardButton(text="🤔 Помогите выбрать", callback_data="order_fmt_help"))
+    return builder.as_markup()
+
+
+def kb_order_delivery() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🚶 Самовывоз — бесплатно", callback_data="order_dlv_pickup"))
+    builder.row(InlineKeyboardButton(text="📮 Почтой России — 500₽", callback_data="order_dlv_post"))
     return builder.as_markup()
 
 
@@ -187,7 +194,10 @@ def kb_order_edit() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✍️ Надпись", callback_data="order_re_phrase"),
         InlineKeyboardButton(text="🎨 Оформление", callback_data="order_re_design"),
     )
-    builder.row(InlineKeyboardButton(text="🎁 Формат", callback_data="order_re_format"))
+    builder.row(
+        InlineKeyboardButton(text="🎁 Формат", callback_data="order_re_format"),
+        InlineKeyboardButton(text="📦 Доставку", callback_data="order_re_delivery"),
+    )
     builder.row(InlineKeyboardButton(text="👨‍💼 Позвать менеджера", callback_data="call_manager"))
     return builder.as_markup()
 

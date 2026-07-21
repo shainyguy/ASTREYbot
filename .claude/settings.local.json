@@ -25,7 +25,13 @@
       "Bash(python -m compileall -q .)",
       "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
       "Bash(PYTHONIOENCODING=utf-8 python -)",
-      "Bash(python -m pyflakes handlers/order.py recent.py takeover.py vk_bot/funnel.py)"
+      "Bash(python -m pyflakes handlers/order.py recent.py takeover.py vk_bot/funnel.py)",
+      "Bash(python -)",
+      "Bash(python -c \"import ast;ast.parse\\(open\\('vk_bot/funnel.py',encoding='utf-8'\\).read\\(\\)\\);print\\('синтаксис OK'\\)\")",
+      "Bash(python -m pyflakes .)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 90 python \"C:\\\\Users\\\\acer\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-acer-Desktop----------astreybot\\\\46e46487-f295-449c-944d-e38ffb546af0\\\\scratchpad\\\\sim_order.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 90 python \"C:\\\\Users\\\\acer\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-acer-Desktop----------astreybot\\\\46e46487-f295-449c-944d-e38ffb546af0\\\\scratchpad\\\\sim_vk.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 90 python -c ' *)"
     ]
   }
 }

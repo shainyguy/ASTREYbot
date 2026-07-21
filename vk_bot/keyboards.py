@@ -118,8 +118,15 @@ def kb_order_format() -> str:
     return _keyboard([
         [_btn("⚡ Электронно — 590₽", {"cmd": "order_fmt", "fmt": "electronic"}, "positive")],
         [_btn("🖼 А4 в рамке — 2 190₽", {"cmd": "order_fmt", "fmt": "a4_frame"})],
-        [_btn("🖼 А3 в рамке — 2 690₽", {"cmd": "order_fmt", "fmt": "a3_frame"})],
+        [_btn("🖼 А3 в рамке — 2 490₽", {"cmd": "order_fmt", "fmt": "a3_frame"})],
         [_btn("🤔 Помогите выбрать", {"cmd": "order_fmt", "fmt": "help"})],
+    ], one_time=True)
+
+
+def kb_order_delivery() -> str:
+    return _keyboard([
+        [_btn("🚶 Самовывоз — бесплатно", {"cmd": "order_dlv", "dlv": "pickup"}, "positive")],
+        [_btn("📮 Почтой России — 500₽", {"cmd": "order_dlv", "dlv": "post"})],
     ], one_time=True)
 
 

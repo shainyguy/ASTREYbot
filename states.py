@@ -20,6 +20,7 @@ class Order(StatesGroup):
     phrase = State()
     design = State()
     choose_format = State()
+    choose_delivery = State()
     awaiting_payment = State()
 
 

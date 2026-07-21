@@ -445,11 +445,7 @@ async def send_product_photos(chat_id: int, bot: Bot):
 
 
 def _check_faq(text: str) -> str:
-    text_lower = text.lower()
-    for keyword, answer in msg.FAQ.items():
-        if keyword in text_lower:
-            return answer
-    return ""
+    return msg.find_faq(text)
 
 
 @router.callback_query(F.data.startswith("faq_"))

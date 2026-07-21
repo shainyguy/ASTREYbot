@@ -1,7 +1,8 @@
-"""Оформление заказа: дата → место → надпись → дизайн → формат → оплата.
+"""Оформление заказа: дата → место → надпись → оформление → формат → доставка → оплата.
 
-Бот доводит клиента до оплаты сам, без участия менеджера. Менеджер получает
-готовую карточку заказа и берётся за макет.
+Бот доводит клиента до оплаты сам. На любом шаге человек может задать вопрос —
+бот отвечает (FAQ или ИИ) и возвращает к тому же шагу, а не записывает вопрос
+в заказ. Если совсем не понимает — зовёт менеджера, но никогда не молчит.
 """
 import logging
 import re
@@ -15,15 +16,17 @@ import database as db
 import messages as msg
 import keyboards as kb
 import notifier
+import order_parse as parse
 import recent
 import takeover
 from states import Funnel, Order
-from config import ADMIN_IDS, format_info
+from config import ADMIN_IDS, format_info, delivery_info, POSTCARD_PRICE
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-POSTCARD_PRICE = 190
+# Сколько раз подряд не смогли разобрать ответ — потом зовём менеджера
+MAX_RETRIES = 2
 
 
 # ══════════════════════════════════════════════
@@ -42,8 +45,100 @@ _BUY_INTENT = re.compile(
 
 
 def detect_buy_intent(text: str) -> bool:
-    """Клиент словами показал, что готов оформлять."""
     return bool(_BUY_INTENT.search(text or ""))
+
+
+# ══════════════════════════════════════════════
+#  ОТВЕТ НА ВОПРОС ПОСРЕДИ ОФОРМЛЕНИЯ
+# ══════════════════════════════════════════════
+
+async def answer_question(user_id: int, text: str) -> str:
+    """Ответ на вопрос: сначала готовые ответы, потом ИИ.
+
+    Пустая строка — не смогли ответить вообще.
+    """
+    ready = msg.find_faq(text)
+    if ready:
+        return ready
+
+    from handlers import funnel
+    if funnel.gigachat_client:
+        import gigachat as gc
+        history = gc.get_history(user_id)
+        reply = await funnel.gigachat_client.chat(history, text)
+        if reply:
+            gc.add_to_history(user_id, "user", text)
+            gc.add_to_history(user_id, "assistant", reply)
+            return reply
+    return ""
+
+
+async def handle_question(message: Message, state: FSMContext, step: str) -> bool:
+    """Отвечает на вопрос и возвращает клиента к текущему шагу.
+
+    → True, если это был вопрос и мы его обработали.
+    """
+    text = message.text or ""
+    if not (parse.looks_like_question(text, step) or parse.mentions_faq_topic(text)):
+        return False
+
+    user_id = message.from_user.id
+    recent.remember(user_id, "incoming", text)
+
+    reply = await answer_question(user_id, text)
+    if not reply:
+        # Не смогли ответить. Сразу сдаваться нельзя — заказ оборвётся,
+        # поэтому честно признаёмся и продолжаем. Менеджера зовём, только
+        # если не отвечаем уже второй раз подряд.
+        data = await state.get_data()
+        misses = data.get("answer_misses", 0) + 1
+        await state.update_data(answer_misses=misses)
+
+        if misses >= 2:
+            await message.answer(msg.ORDER_STUCK, parse_mode="Markdown")
+            await db.update_user(user_id, stage="waiting_manager")
+            await takeover.notify_admins_waiting(
+                user_id, f"Вопрос при оформлении заказа: {text}"
+            )
+            return True
+
+        await message.answer(msg.ORDER_ANSWER_LATER, parse_mode="Markdown")
+        await message.answer(
+            msg.ORDER_STEP_PROMPTS.get(step, "Продолжим оформление 😊"),
+            reply_markup=kb.kb_order_cancel(),
+            parse_mode="Markdown",
+        )
+        return True
+
+    await state.update_data(answer_misses=0)
+    await message.answer(reply, parse_mode="Markdown")
+    recent.remember(user_id, "outgoing", reply)
+    await message.answer(
+        msg.ORDER_STEP_PROMPTS.get(step, "Продолжим оформление 😊"),
+        reply_markup=kb.kb_order_cancel(),
+        parse_mode="Markdown",
+    )
+    return True
+
+
+async def _retry_or_manager(message: Message, state: FSMContext,
+                            step: str, retry_text: str) -> None:
+    """Не разобрали ответ: пару раз переспрашиваем, потом зовём менеджера."""
+    data = await state.get_data()
+    key = f"retries_{step}"
+    count = data.get(key, 0) + 1
+    await state.update_data(**{key: count})
+
+    if count > MAX_RETRIES:
+        await message.answer(msg.ORDER_STUCK, parse_mode="Markdown")
+        await db.update_user(message.from_user.id, stage="waiting_manager")
+        await takeover.notify_admins_waiting(
+            message.from_user.id,
+            f"Застрял на шаге «{step}» при оформлении. Последний ответ: {message.text}",
+        )
+        return
+
+    await message.answer(retry_text, reply_markup=kb.kb_order_cancel(), parse_mode="Markdown")
 
 
 # ══════════════════════════════════════════════
@@ -57,10 +152,8 @@ async def cb_order_start(call: CallbackQuery, state: FSMContext):
 
 
 async def begin_order(user_id: int, target: Message, state: FSMContext) -> None:
-    """Запускает сбор заказа. Годится и для кнопки, и для intent из текста."""
     data = await state.get_data()
     await state.set_state(Order.event_date)
-    # Повод/бюджет из воронки сохраняем — пригодятся в карточке заказа
     await state.update_data(order_edit_field=None, occasion=data.get("occasion"))
     await db.update_user(user_id, stage="ordering")
     await target.answer(msg.ORDER_START, reply_markup=kb.kb_order_cancel(), parse_mode="Markdown")
@@ -75,43 +168,38 @@ async def cb_order_cancel(call: CallbackQuery, state: FSMContext):
 
 
 # ══════════════════════════════════════════════
-#  ШАГИ 1-4 — СБОР ДАННЫХ
+#  ШАГ 1 — ДАТА (строгий формат)
 # ══════════════════════════════════════════════
-
-async def _advance(message: Message, state: FSMContext, field: str,
-                   value: str, next_state, next_text: str) -> None:
-    """Сохраняет ответ и ведёт к следующему шагу.
-
-    Если клиент правит один пункт из сводки (order_edit_field), возвращаем
-    его сразу к оплате, а не гоним по всей цепочке заново.
-    """
-    await state.update_data(**{field: value})
-    recent.remember(message.from_user.id, "incoming", value)
-
-    data = await state.get_data()
-    if data.get("order_edit_field") == field:
-        await state.update_data(order_edit_field=None)
-        await _show_summary(message, state)
-        return
-
-    await state.set_state(next_state)
-    await message.answer(next_text, reply_markup=kb.kb_order_cancel(), parse_mode="Markdown")
-
 
 @router.message(Order.event_date, F.text)
 async def msg_event_date(message: Message, state: FSMContext):
-    await _advance(message, state, "event_date", message.text.strip(),
-                   Order.event_place, msg.ORDER_ASK_PLACE)
+    normalized = parse.parse_date(message.text)
+    if normalized:
+        await _advance(message, state, "event_date", normalized,
+                       Order.event_place, msg.ORDER_ASK_PLACE)
+        return
+    # Не дата — либо вопрос, либо опечатка
+    if await handle_question(message, state, "event_date"):
+        return
+    await _retry_or_manager(message, state, "event_date", msg.ORDER_DATE_RETRY)
 
+
+# ══════════════════════════════════════════════
+#  ШАГИ 2-4 — МЕСТО, НАДПИСЬ, ОФОРМЛЕНИЕ
+# ══════════════════════════════════════════════
 
 @router.message(Order.event_place, F.text)
 async def msg_event_place(message: Message, state: FSMContext):
+    if await handle_question(message, state, "event_place"):
+        return
     await _advance(message, state, "event_place", message.text.strip(),
                    Order.phrase, msg.ORDER_ASK_PHRASE)
 
 
 @router.message(Order.phrase, F.text)
 async def msg_phrase(message: Message, state: FSMContext):
+    if await handle_question(message, state, "phrase"):
+        return
     await _advance(message, state, "phrase", message.text.strip(),
                    Order.design, msg.ORDER_ASK_DESIGN)
 
@@ -124,6 +212,9 @@ async def msg_design_photo(message: Message, state: FSMContext):
 
 @router.message(Order.design, F.text)
 async def msg_design(message: Message, state: FSMContext):
+    if await handle_question(message, state, "design"):
+        return
+
     design = message.text.strip()
     await state.update_data(design=design)
     recent.remember(message.from_user.id, "incoming", design)
@@ -134,13 +225,24 @@ async def msg_design(message: Message, state: FSMContext):
         await _show_summary(message, state)
         return
 
-    # Формат мог быть выбран заранее — тогда не переспрашиваем
-    if data.get("order_format"):
-        await _offer_postcard(message, state)
+    await state.set_state(Order.choose_format)
+    await message.answer(msg.ORDER_ASK_FORMAT, reply_markup=kb.kb_order_format(),
+                         parse_mode="Markdown")
+
+
+async def _advance(message: Message, state: FSMContext, field: str,
+                   value: str, next_state, next_text: str) -> None:
+    await state.update_data(**{field: value})
+    recent.remember(message.from_user.id, "incoming", value)
+
+    data = await state.get_data()
+    if data.get("order_edit_field") == field:
+        await state.update_data(order_edit_field=None)
+        await _show_summary(message, state)
         return
 
-    await state.set_state(Order.choose_format)
-    await message.answer(msg.ORDER_ASK_FORMAT, reply_markup=kb.kb_order_format(), parse_mode="Markdown")
+    await state.set_state(next_state)
+    await message.answer(next_text, reply_markup=kb.kb_order_cancel(), parse_mode="Markdown")
 
 
 # ══════════════════════════════════════════════
@@ -155,24 +257,86 @@ async def cb_order_format(call: CallbackQuery, state: FSMContext):
     if choice == "help":
         await call.message.answer(
             "Подскажу 😊\n\n"
-            "⚡ *Электронно* — если нужно срочно или хотите распечатать сами.\n"
-            "🖼 *А4 в рамке* — универсальный вариант, хорошо смотрится на полке или столе.\n"
-            "🖼 *А3 в рамке* — если это главный подарок и хочется, чтобы висел на стене.\n\n"
-            "Чаще всего берут А4 — золотая середина.",
+            "⚡ *Электронно* — если нужно срочно или распечатаете сами.\n"
+            "🖼 *А4 в рамке* — универсально, хорошо смотрится на полке или столе.\n"
+            "🖼 *А3 в рамке* — если это главный подарок и хочется повесить на стену.\n\n"
+            "Чаще всего берут А4 — золотая середина. Какой возьмём?",
             reply_markup=kb.kb_order_format(),
             parse_mode="Markdown",
         )
         return
 
-    await state.update_data(order_format=choice)
+    await _apply_format(call.message, state, choice, user_id=call.from_user.id)
+
+
+@router.message(Order.choose_format, F.text)
+async def msg_choose_format(message: Message, state: FSMContext):
+    """Формат словами: «давайте А4», «электронный».
+
+    Без этого обработчика бот молчал: сообщение не подходило ни одному
+    роутеру и просто проваливалось в пустоту.
+    """
+    fmt = parse.parse_format(message.text)
+    if fmt:
+        await _apply_format(message, state, fmt, user_id=message.from_user.id)
+        return
+    if await handle_question(message, state, "format"):
+        return
+    await _retry_or_manager(message, state, "format", msg.ORDER_FORMAT_RETRY)
+
+
+async def _apply_format(target: Message, state: FSMContext, fmt: str, user_id: int) -> None:
+    await state.update_data(order_format=fmt)
     data = await state.get_data()
 
     if data.get("order_edit_field") == "format":
         await state.update_data(order_edit_field=None)
-        await _show_summary(call.message, state, user_id=call.from_user.id)
+        await _show_summary(target, state, user_id=user_id)
         return
 
-    await _offer_postcard(call.message, state)
+    # Электронный формат везти не нужно — сразу к открытке
+    if fmt == "electronic":
+        await state.update_data(delivery=None)
+        await _offer_postcard(target, state)
+        return
+
+    await state.set_state(Order.choose_delivery)
+    await target.answer(msg.ORDER_ASK_DELIVERY, reply_markup=kb.kb_order_delivery(),
+                        parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════
+#  ШАГ 6 — ДОСТАВКА (для форматов в рамке)
+# ══════════════════════════════════════════════
+
+@router.callback_query(F.data.startswith("order_dlv_"))
+async def cb_order_delivery(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    choice = call.data.split("order_dlv_", 1)[1]
+    await _apply_delivery(call.message, state, choice, user_id=call.from_user.id)
+
+
+@router.message(Order.choose_delivery, F.text)
+async def msg_choose_delivery(message: Message, state: FSMContext):
+    choice = parse.parse_delivery(message.text)
+    if choice:
+        await _apply_delivery(message, state, choice, user_id=message.from_user.id)
+        return
+    if await handle_question(message, state, "delivery"):
+        return
+    await _retry_or_manager(message, state, "delivery", msg.ORDER_DELIVERY_RETRY)
+
+
+async def _apply_delivery(target: Message, state: FSMContext, choice: str, user_id: int) -> None:
+    await state.update_data(delivery=choice)
+    data = await state.get_data()
+
+    if data.get("order_edit_field") == "delivery":
+        await state.update_data(order_edit_field=None)
+        await _show_summary(target, state, user_id=user_id)
+        return
+
+    await _offer_postcard(target, state)
 
 
 # ══════════════════════════════════════════════
@@ -199,57 +363,96 @@ async def cb_postcard_no(call: CallbackQuery, state: FSMContext):
 
 
 @router.message(Order.awaiting_payment, F.text)
-async def msg_postcard_text(message: Message, state: FSMContext):
-    """Текст открытки — единственное, что ждём на этом шаге."""
+async def msg_awaiting_payment(message: Message, state: FSMContext):
+    """На шаге оплаты ждём текст открытки, всё остальное — вопросы."""
     data = await state.get_data()
-    if not data.get("awaiting_postcard_text"):
-        # Клиент просто что-то пишет у оплаты — отвечаем как обычно
-        from handlers.funnel import process_ai_message
-        await process_ai_message(message, state, message.bot)
+
+    if data.get("awaiting_postcard_text"):
+        await state.update_data(
+            postcard_text=message.text.strip(),
+            awaiting_postcard_text=False,
+        )
+        await message.answer(msg.POSTCARD_ADDED, parse_mode="Markdown")
+        await _show_summary(message, state)
         return
 
-    await state.update_data(
-        postcard_text=message.text.strip(),
-        awaiting_postcard_text=False,
-    )
-    await message.answer(msg.POSTCARD_ADDED, parse_mode="Markdown")
-    await _show_summary(message, state)
+    # Клиент что-то спрашивает у оплаты — отвечаем, не теряя заказ
+    user_id = message.from_user.id
+    text = message.text or ""
+    recent.remember(user_id, "incoming", text)
+
+    reply = await answer_question(user_id, text)
+    if reply:
+        await message.answer(reply, reply_markup=kb.kb_order_edit(), parse_mode="Markdown")
+        recent.remember(user_id, "outgoing", reply)
+        return
+
+    await message.answer(msg.ORDER_STUCK, parse_mode="Markdown")
+    await db.update_user(user_id, stage="waiting_manager")
+    await takeover.notify_admins_waiting(user_id, f"Вопрос перед оплатой: {text}")
 
 
 # ══════════════════════════════════════════════
 #  СВОДКА + ОПЛАТА
 # ══════════════════════════════════════════════
 
+def _calc(data: dict) -> dict:
+    """Считает суммы. По ссылке платится только карта, остальное — доплата."""
+    fmt_key = data.get("order_format", "electronic")
+    fmt_name, base, pay_url = format_info(fmt_key)
+
+    extras, extras_sum = [], 0
+    if int(data.get("postcard") or 0):
+        extras.append(f"открытка {POSTCARD_PRICE}₽")
+        extras_sum += POSTCARD_PRICE
+
+    dlv_key = data.get("delivery")
+    dlv_name, dlv_price = delivery_info(dlv_key) if dlv_key else ("", 0)
+    if dlv_price:
+        extras.append(f"доставка {dlv_price}₽")
+        extras_sum += dlv_price
+
+    return {
+        "fmt_key": fmt_key, "fmt_name": fmt_name, "base": base, "pay_url": pay_url,
+        "dlv_key": dlv_key, "dlv_name": dlv_name, "dlv_price": dlv_price,
+        "extras": extras, "extras_sum": extras_sum, "total": base + extras_sum,
+    }
+
+
+def _extras_phrase(c: dict) -> str:
+    """«доставка 500₽» или «открытка 190₽ и доставка 500₽ — итого 690₽»."""
+    if len(c["extras"]) == 1:
+        return c["extras"][0]
+    return f"{' и '.join(c['extras'])} — итого {c['extras_sum']}₽"
+
+
 async def _show_summary(target: Message, state: FSMContext, user_id: int = None) -> None:
     data = await state.get_data()
     uid = user_id or target.chat.id
-
-    fmt_key = data.get("order_format", "electronic")
-    fmt_name, price, pay_url = format_info(fmt_key)
+    c = _calc(data)
 
     postcard = int(data.get("postcard") or 0)
-    amount = price + (POSTCARD_PRICE if postcard else 0)
     postcard_line = f"💌 Открытка: _{data.get('postcard_text', 'с вашим текстом')}_\n" if postcard else ""
+    delivery_line = f"📦 Получение: *{c['dlv_name']}*\n" if c["dlv_name"] else ""
+    extras_line = msg.ORDER_EXTRAS_NOTE.format(extras=_extras_phrase(c)) if c["extras"] else ""
 
     user = await db.get_user(uid) or {}
-
     fields = dict(
-        format=fmt_key,
+        format=c["fmt_key"],
         event_date=data.get("event_date", ""),
         event_place=data.get("event_place", ""),
         phrase=data.get("phrase", ""),
         design=data.get("design", ""),
         postcard=postcard,
-        amount=amount,
+        amount=c["total"],
     )
 
-    # Клиент правит уже собранный заказ — обновляем ту же запись,
-    # иначе каждая правка плодила новый заказ и новое уведомление админу
+    # Правка уже собранного заказа обновляет ту же запись, иначе каждое
+    # исправление плодило дубль и повторное уведомление админу
     existing_id = data.get("order_id")
     if existing_id:
         await db.update_order(existing_id, **fields)
-        order_id = existing_id
-        is_new = False
+        order_id, is_new = existing_id, False
     else:
         order_id = await db.create_order(
             uid,
@@ -268,37 +471,39 @@ async def _show_summary(target: Message, state: FSMContext, user_id: int = None)
         event_place=data.get("event_place", "—"),
         phrase=data.get("phrase", "—"),
         design=data.get("design", "—"),
-        format_name=fmt_name,
+        format_name=c["fmt_name"],
+        delivery_line=delivery_line,
         postcard_line=postcard_line,
-        amount=amount,
+        amount=c["base"],
+        extras_line=extras_line,
     )
+    await target.answer(summary, reply_markup=kb.kb_order_pay(c["pay_url"], order_id),
+                        parse_mode="Markdown")
     await target.answer(
-        summary,
-        reply_markup=kb.kb_order_pay(pay_url, order_id),
+        msg.ORDER_PAID_HINT.format(delivery_line=_delivery_line(c["fmt_key"], c["dlv_key"])),
         parse_mode="Markdown",
     )
-    await target.answer(
-        msg.ORDER_PAID_HINT.format(delivery_line=_delivery_line(fmt_key)),
-        parse_mode="Markdown",
-    )
-    # Карточку админу шлём один раз — на правках он её уже видел
+
     if is_new:
         await _notify_admin_order(order_id, uid)
 
 
-def _delivery_line(fmt_key: str) -> str:
+def _delivery_line(fmt_key: str, dlv_key: str = None) -> str:
     if fmt_key == "electronic":
         return "Присылаем готовый PDF на почту — в течение часа после утверждения ⚡"
-    return "Печатаем, оформляем в рамку и отправляем — 3-7 рабочих дней по России 🚚"
+    if dlv_key == "pickup":
+        return "Печатаем, оформляем в рамку и пишем вам, когда можно забрать — м. Сокольники 🚶"
+    return "Печатаем, оформляем в рамку и отправляем почтой — 3-7 рабочих дней 📮"
 
+
+# ══════════════════════════════════════════════
+#  ПРАВКИ
+# ══════════════════════════════════════════════
 
 @router.callback_query(F.data == "order_edit")
 async def cb_order_edit(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    await call.message.answer(
-        "Что поправим? 😊",
-        reply_markup=kb.kb_order_edit(),
-    )
+    await call.message.answer("Что поправим? 😊", reply_markup=kb.kb_order_edit())
 
 
 @router.callback_query(F.data.startswith("order_re_"))
@@ -307,16 +512,23 @@ async def cb_order_redo(call: CallbackQuery, state: FSMContext):
     field = call.data.split("order_re_", 1)[1]
 
     steps = {
-        "date": ("event_date", Order.event_date, "📅 Какая дата у события?"),
-        "place": ("event_place", Order.event_place, "🌍 В каком городе это было?"),
-        "phrase": ("phrase", Order.phrase, "✍️ Какую надпись разместить на карте?"),
-        "design": ("design", Order.design, "🎨 Опишите словами, каким видите оформление."),
+        "date": ("event_date", Order.event_date, msg.ORDER_STEP_PROMPTS["event_date"]),
+        "place": ("event_place", Order.event_place, msg.ORDER_STEP_PROMPTS["event_place"]),
+        "phrase": ("phrase", Order.phrase, msg.ORDER_STEP_PROMPTS["phrase"]),
+        "design": ("design", Order.design, msg.ORDER_STEP_PROMPTS["design"]),
     }
 
     if field == "format":
         await state.update_data(order_edit_field="format")
         await state.set_state(Order.choose_format)
         await call.message.answer(msg.ORDER_ASK_FORMAT, reply_markup=kb.kb_order_format(),
+                                  parse_mode="Markdown")
+        return
+
+    if field == "delivery":
+        await state.update_data(order_edit_field="delivery")
+        await state.set_state(Order.choose_delivery)
+        await call.message.answer(msg.ORDER_ASK_DELIVERY, reply_markup=kb.kb_order_delivery(),
                                   parse_mode="Markdown")
         return
 
@@ -387,9 +599,18 @@ async def _notify_admin_order(order_id: int, user_db_id: int) -> None:
 
     name, source = await takeover.describe_user(user_db_id)
     user = await db.get_user(user_db_id) or {}
-    fmt_name, _, _ = format_info(order.get("format", "electronic"))
+    fmt_name, base, _ = format_info(order.get("format", "electronic"))
 
-    postcard_line = "💌 Открытка: да\n" if order.get("postcard") else ""
+    extras = []
+    if order.get("postcard"):
+        extras.append(f"открытка {POSTCARD_PRICE}₽")
+    total = order.get("amount", base)
+    if total - base - (POSTCARD_PRICE if order.get("postcard") else 0) > 0:
+        extras.append("доставка 500₽")
+
+    postcard_line = ""
+    if extras:
+        postcard_line = f"➕ Доплата: {', '.join(extras)} — *свяжись с клиентом*\n"
 
     text = msg.ADMIN_NEW_ORDER.format(
         order_id=order_id,
@@ -402,7 +623,7 @@ async def _notify_admin_order(order_id: int, user_db_id: int) -> None:
         design=takeover.escape(order.get("design") or "—"),
         format_name=fmt_name,
         postcard_line=postcard_line,
-        amount=order.get("amount", 0),
+        amount=base,
         created_at=datetime.now().strftime("%d.%m.%Y %H:%M"),
     )
 

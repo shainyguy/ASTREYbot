@@ -30,10 +30,16 @@ async def _update_bot_msg_time(db_id: int) -> None:
 
 
 async def _maybe_nudge_to_order(vk_id: int, db_id: int, message: Message) -> None:
-    """Подталкивает к заказу после КАЖДОГО ответа бота, чередуя вопросы."""
+    """Подталкивает к заказу, но не чаще чем раз в 3 ответа.
+
+    Раньше нудж летел после КАЖДОГО ответа: человек задал три вопроса —
+    три раза получил «купи». В ВК это особенно быстро читается как спам.
+    """
     count = _ai_message_count.get(vk_id, 0) + 1
     _ai_message_count[vk_id] = count
-    nudge_idx = (count - 1) % len(msg.ORDER_NUDGES)
+    if count % 3 != 0:
+        return
+    nudge_idx = (count // 3 - 1) % len(msg.ORDER_NUDGES)
     nudge_text = _strip_md(msg.ORDER_NUDGES[nudge_idx].format(url=WEBSITE_URL))
     await _send(message, nudge_text, vk_kb.kb_ai_chat())
 
@@ -126,7 +132,8 @@ async def handle_message(message: Message) -> None:
         await _start_order(message, user_id, db_id)
         return
 
-    if state in _ORDER_STATES or cmd in ("order_fmt", "postcard_yes", "postcard_no", "order_paid"):
+    if state in _ORDER_STATES or cmd in ("order_fmt", "order_dlv", "postcard_yes",
+                                          "postcard_no", "order_paid"):
         await _handle_order(message, user_id, db_id, state, cmd, payload, raw_text)
         return
 
@@ -444,67 +451,164 @@ async def _handle_get_phone(message: Message, user_id: int, db_id: int, text: st
 #  ОФОРМЛЕНИЕ ЗАКАЗА
 # ══════════════════════════════════════════════
 
-_ORDER_STATES = (
-    st.ORDER_DATE, st.ORDER_PLACE, st.ORDER_PHRASE, st.ORDER_DESIGN,
-    st.ORDER_FORMAT, st.ORDER_POSTCARD, st.ORDER_POSTCARD_TEXT, st.ORDER_PAY,
+FORMAT_HELP = (
+    "Подскажу\n\n"
+    "Электронно — если нужно срочно или распечатаете сами.\n"
+    "А4 в рамке — универсально, хорошо смотрится на полке.\n"
+    "А3 в рамке — если это главный подарок и хочется на стену.\n\n"
+    "Чаще всего берут А4 — золотая середина. Какой возьмём?"
 )
 
+
+_ORDER_STATES = (
+    st.ORDER_DATE, st.ORDER_PLACE, st.ORDER_PHRASE, st.ORDER_DESIGN,
+    st.ORDER_FORMAT, st.ORDER_DELIVERY, st.ORDER_POSTCARD,
+    st.ORDER_POSTCARD_TEXT, st.ORDER_PAY,
+)
+
+# Состояние -> (поле заказа, следующее состояние, текст шага, вид клавиатуры)
+_ORDER_STEPS = {
+    st.ORDER_DATE:   ("event_date", st.ORDER_PLACE, "ORDER_ASK_PLACE", "cancel"),
+    st.ORDER_PLACE:  ("event_place", st.ORDER_PHRASE, "ORDER_ASK_PHRASE", "cancel"),
+    st.ORDER_PHRASE: ("phrase", st.ORDER_DESIGN, "ORDER_ASK_DESIGN", "cancel"),
+    st.ORDER_DESIGN: ("design", st.ORDER_FORMAT, "ORDER_ASK_FORMAT", "format"),
+}
+
+_STEP_KEYS = {
+    st.ORDER_DATE: "event_date", st.ORDER_PLACE: "event_place",
+    st.ORDER_PHRASE: "phrase", st.ORDER_DESIGN: "design",
+    st.ORDER_FORMAT: "format", st.ORDER_DELIVERY: "delivery",
+}
+
 POSTCARD_PRICE = 190
+MAX_RETRIES = 2
+_retries: dict[int, dict] = {}
 
 
 async def _start_order(message: Message, user_id: int, db_id: int) -> None:
     st.set_state(user_id, st.ORDER_DATE)
+    _retries.pop(user_id, None)
     await db.update_user(db_id, stage="ordering")
     await _send(message, _strip_md(msg.ORDER_START), vk_kb.kb_order_cancel())
+
+
+async def _vk_question(message: Message, user_id: int, db_id: int,
+                       text: str, step: str) -> bool:
+    """Вопрос посреди оформления: отвечаем и возвращаем к тому же шагу."""
+    import order_parse as parse
+    from handlers.order import answer_question
+
+    if not (parse.looks_like_question(text, step) or parse.mentions_faq_topic(text)):
+        return False
+
+    reply = await answer_question(db_id, text)
+    if not reply:
+        # Сразу сдаваться нельзя — заказ оборвётся. Признаёмся и продолжаем,
+        # менеджера зовём только со второго промаха подряд.
+        counts = _retries.setdefault(user_id, {})
+        counts["answer_miss"] = counts.get("answer_miss", 0) + 1
+
+        if counts["answer_miss"] >= 2:
+            await _send(message, _strip_md(msg.ORDER_STUCK))
+            st.set_state(user_id, st.WAITING_MANAGER)
+            await db.update_user(db_id, stage="waiting_manager")
+            await takeover.notify_admins_waiting(db_id, "Вопрос при оформлении: " + text)
+            return True
+
+        await _send(message, _strip_md(msg.ORDER_ANSWER_LATER))
+        await _send(message, _strip_md(msg.ORDER_STEP_PROMPTS.get(step, "Продолжим оформление")),
+                    vk_kb.kb_order_cancel())
+        return True
+
+    _retries.setdefault(user_id, {})["answer_miss"] = 0
+    await _send(message, _strip_md(reply))
+    await _send(message, _strip_md(msg.ORDER_STEP_PROMPTS.get(step, "Продолжим оформление")),
+                vk_kb.kb_order_cancel())
+    return True
+
+
+async def _vk_retry(message: Message, user_id: int, db_id: int,
+                    step: str, retry_text: str) -> None:
+    """Не разобрали ответ: пара попыток, потом зовём менеджера."""
+    counts = _retries.setdefault(user_id, {})
+    counts[step] = counts.get(step, 0) + 1
+
+    if counts[step] > MAX_RETRIES:
+        await _send(message, _strip_md(msg.ORDER_STUCK))
+        st.set_state(user_id, st.WAITING_MANAGER)
+        await db.update_user(db_id, stage="waiting_manager")
+        await takeover.notify_admins_waiting(db_id, "Застрял на шаге " + step + " при оформлении")
+        return
+
+    await _send(message, _strip_md(retry_text), vk_kb.kb_order_cancel())
 
 
 async def _handle_order(message: Message, user_id: int, db_id: int,
                         state: str, cmd: str, payload: dict, text: str) -> None:
     """Пошаговый сбор заказа во ВКонтакте — зеркалит сценарий Telegram."""
+    import order_parse as parse
 
+    # Дата: строгий формат
     if state == st.ORDER_DATE:
-        st.update_data(user_id, event_date=text)
-        st.set_state(user_id, st.ORDER_PLACE)
-        await _send(message, _strip_md(msg.ORDER_ASK_PLACE), vk_kb.kb_order_cancel())
+        normalized = parse.parse_date(text)
+        if normalized:
+            await _order_next(message, user_id, "event_date", normalized, st.ORDER_DATE)
+            return
+        if await _vk_question(message, user_id, db_id, text, "event_date"):
+            return
+        await _vk_retry(message, user_id, db_id, "event_date", msg.ORDER_DATE_RETRY)
         return
 
-    if state == st.ORDER_PLACE:
-        st.update_data(user_id, event_place=text)
-        st.set_state(user_id, st.ORDER_PHRASE)
-        await _send(message, _strip_md(msg.ORDER_ASK_PHRASE), vk_kb.kb_order_cancel())
-        return
-
-    if state == st.ORDER_PHRASE:
-        st.update_data(user_id, phrase=text)
-        st.set_state(user_id, st.ORDER_DESIGN)
-        await _send(message, _strip_md(msg.ORDER_ASK_DESIGN), vk_kb.kb_order_cancel())
-        return
-
-    if state == st.ORDER_DESIGN:
+    # Место, надпись, оформление
+    if state in (st.ORDER_PLACE, st.ORDER_PHRASE, st.ORDER_DESIGN):
+        step_key = _STEP_KEYS[state]
+        if await _vk_question(message, user_id, db_id, text, step_key):
+            return
         if not text:
             await _send(message, _strip_md(msg.ORDER_DESIGN_NOT_PHOTO))
             return
-        st.update_data(user_id, design=text)
-        st.set_state(user_id, st.ORDER_FORMAT)
-        await _send(message, _strip_md(msg.ORDER_ASK_FORMAT), vk_kb.kb_order_format())
+        await _order_next(message, user_id, step_key, text, state)
         return
 
+    # Формат
     if cmd == "order_fmt":
         fmt = payload.get("fmt", "electronic")
         if fmt == "help":
-            await _send(message,
-                "Подскажу 😊\n\n"
-                "⚡ Электронно — если нужно срочно или распечатаете сами.\n"
-                "🖼 А4 в рамке — универсально, хорошо смотрится на полке.\n"
-                "🖼 А3 в рамке — если это главный подарок и хочется на стену.\n\n"
-                "Чаще всего берут А4 — золотая середина.",
-                vk_kb.kb_order_format())
+            await _send(message, FORMAT_HELP, vk_kb.kb_order_format())
             return
-        st.update_data(user_id, order_format=fmt)
+        await _apply_format(message, user_id, db_id, fmt)
+        return
+
+    if state == st.ORDER_FORMAT:
+        fmt = parse.parse_format(text)
+        if fmt:
+            await _apply_format(message, user_id, db_id, fmt)
+            return
+        if await _vk_question(message, user_id, db_id, text, "format"):
+            return
+        await _vk_retry(message, user_id, db_id, "format", msg.ORDER_FORMAT_RETRY)
+        return
+
+    # Доставка
+    if cmd == "order_dlv":
+        st.update_data(user_id, delivery=payload.get("dlv", "pickup"))
         st.set_state(user_id, st.ORDER_POSTCARD)
         await _send(message, _strip_md(msg.POSTCARD_UPSELL), vk_kb.kb_postcard())
         return
 
+    if state == st.ORDER_DELIVERY:
+        choice = parse.parse_delivery(text)
+        if choice:
+            st.update_data(user_id, delivery=choice)
+            st.set_state(user_id, st.ORDER_POSTCARD)
+            await _send(message, _strip_md(msg.POSTCARD_UPSELL), vk_kb.kb_postcard())
+            return
+        if await _vk_question(message, user_id, db_id, text, "delivery"):
+            return
+        await _vk_retry(message, user_id, db_id, "delivery", msg.ORDER_DELIVERY_RETRY)
+        return
+
+    # Открытка
     if cmd == "postcard_yes":
         st.update_data(user_id, postcard=1)
         st.set_state(user_id, st.ORDER_POSTCARD_TEXT)
@@ -526,22 +630,66 @@ async def _handle_order(message: Message, user_id: int, db_id: int,
         await _confirm_paid(message, user_id, db_id)
         return
 
-    # На шаге оплаты клиент просто что-то спрашивает — отвечаем как обычно
-    if state == st.ORDER_PAY:
-        await _handle_ai(message, user_id, db_id, text)
+    # Ждём оплату: на вопросы отвечаем, заказ не теряем
+    if state in (st.ORDER_PAY, st.ORDER_POSTCARD):
+        from handlers.order import answer_question
+        reply = await answer_question(db_id, text)
+        if reply:
+            await _send(message, _strip_md(reply), vk_kb.kb_ai_chat())
+            return
+        await _send(message, _strip_md(msg.ORDER_STUCK))
+        st.set_state(user_id, st.WAITING_MANAGER)
+        await db.update_user(db_id, stage="waiting_manager")
+        await takeover.notify_admins_waiting(db_id, "Вопрос перед оплатой: " + text)
+
+
+async def _order_next(message: Message, user_id: int, field: str,
+                      value: str, state: str) -> None:
+    st.update_data(user_id, **{field: value})
+    _, next_state, next_text_key, kb_kind = _ORDER_STEPS[state]
+    st.set_state(user_id, next_state)
+    keyboard = vk_kb.kb_order_format() if kb_kind == "format" else vk_kb.kb_order_cancel()
+    await _send(message, _strip_md(getattr(msg, next_text_key)), keyboard)
+
+
+async def _apply_format(message: Message, user_id: int, db_id: int, fmt: str) -> None:
+    st.update_data(user_id, order_format=fmt)
+    if fmt == "electronic":
+        st.update_data(user_id, delivery=None)
+        st.set_state(user_id, st.ORDER_POSTCARD)
+        await _send(message, _strip_md(msg.POSTCARD_UPSELL), vk_kb.kb_postcard())
+        return
+    st.set_state(user_id, st.ORDER_DELIVERY)
+    await _send(message, _strip_md(msg.ORDER_ASK_DELIVERY), vk_kb.kb_order_delivery())
 
 
 async def _finish_order(message: Message, user_id: int, db_id: int) -> None:
-    from config import format_info
-    from handlers.order import _notify_admin_order
+    from config import format_info, delivery_info
+    from handlers.order import _notify_admin_order, _delivery_line
 
     data = st.get_data(user_id)
     fmt_key = data.get("order_format", "electronic")
-    fmt_name, price, pay_url = format_info(fmt_key)
+    fmt_name, base, pay_url = format_info(fmt_key)
 
     postcard = int(data.get("postcard") or 0)
-    amount = price + (POSTCARD_PRICE if postcard else 0)
+    dlv_key = data.get("delivery")
+    dlv_name, dlv_price = delivery_info(dlv_key) if dlv_key else ("", 0)
+
+    # По ссылке платится только карта, остальное — доплата через менеджера
+    extras, extras_sum = [], 0
+    if postcard:
+        extras.append(f"открытка {POSTCARD_PRICE}₽")
+        extras_sum += POSTCARD_PRICE
+    if dlv_price:
+        extras.append(f"доставка {dlv_price}₽")
+        extras_sum += dlv_price
+
     postcard_line = "💌 Открытка: да\n" if postcard else ""
+    delivery_line = f"📦 Получение: {dlv_name}\n" if dlv_name else ""
+    from handlers.order import _extras_phrase
+    extras_line = msg.ORDER_EXTRAS_NOTE.format(
+        extras=_extras_phrase({"extras": extras, "extras_sum": extras_sum})
+    ) if extras else ""
 
     user = await db.get_user(db_id) or {}
     order_id = await db.create_order(
@@ -556,7 +704,7 @@ async def _finish_order(message: Message, user_id: int, db_id: int) -> None:
         postcard=postcard,
         full_name=user.get("full_name") or user.get("first_name") or "",
         phone=user.get("phone") or "",
-        amount=amount,
+        amount=base + extras_sum,
         status="awaiting_payment",
     )
     st.update_data(user_id, order_id=order_id)
@@ -568,15 +716,14 @@ async def _finish_order(message: Message, user_id: int, db_id: int) -> None:
         phrase=data.get("phrase", "—"),
         design=data.get("design", "—"),
         format_name=fmt_name,
+        delivery_line=delivery_line,
         postcard_line=postcard_line,
-        amount=amount,
+        amount=base,
+        extras_line=extras_line,
     )
     await _send(message, _strip_md(summary), vk_kb.kb_order_pay(pay_url))
-
-    delivery = ("Присылаем готовый PDF на почту — в течение часа после утверждения ⚡"
-                if fmt_key == "electronic"
-                else "Печатаем, оформляем в рамку и отправляем — 3-7 рабочих дней по России 🚚")
-    await _send(message, _strip_md(msg.ORDER_PAID_HINT.format(delivery_line=delivery)))
+    await _send(message, _strip_md(
+        msg.ORDER_PAID_HINT.format(delivery_line=_delivery_line(fmt_key, dlv_key))))
 
     await _notify_admin_order(order_id, db_id)
 
@@ -704,9 +851,4 @@ async def _send(message: Message, text: str, keyboard: str = None) -> None:
 
 
 def _check_faq(text: str) -> str:
-    from messages import FAQ
-    tl = text.lower()
-    for key, answer in FAQ.items():
-        if key in tl:
-            return answer
-    return ""
+    return msg.find_faq(text)

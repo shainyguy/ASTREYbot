@@ -122,6 +122,14 @@ async def init_db():
     db_url = os.environ.get("DATABASE_URL") or f"sqlite:///{_DB_PATH}"
     await _DB.connect(db_url)
 
+    # Логируем что реально подключилось: DATABASE_URL молча побеждает
+    # DATABASE_PATH, и по логу нельзя было понять, где лежат данные
+    if _DB.is_pg:
+        host = db_url.split("@")[-1].split("/")[0] if "@" in db_url else "?"
+        logger.info(f"База: PostgreSQL ({host}) — DATABASE_PATH не используется")
+    else:
+        logger.info(f"База: SQLite ({_DB_PATH})")
+
     if _DB.is_pg:
         # PostgreSQL синтаксис
         await _DB.execute("""

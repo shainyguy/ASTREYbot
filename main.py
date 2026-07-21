@@ -34,8 +34,7 @@ async def main():
 
     # ── База данных ──
     db.set_db_path(config.DATABASE_PATH)
-    await db.init_db()
-    logger.info(f"Database: {config.DATABASE_PATH}")
+    await db.init_db()  # сама сообщит, какая база подключилась
 
     # ── GigaChat ──
     auth_key = config.GIGACHAT_AUTH_KEY

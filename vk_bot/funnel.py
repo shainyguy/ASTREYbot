@@ -451,11 +451,12 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
     if gigachat_client:
         ai_response = await gigachat_client.chat(history, text)
 
+    await _update_bot_msg_time(db_id)
+
     if ai_response:
         gc.add_to_history(db_id, "user", text)
         gc.add_to_history(db_id, "assistant", ai_response)
         await db.update_user(db_id, ai_confusion_count=0)
-        await _update_bot_msg_time(db_id)
         clean = _strip_md(ai_response)
         recent.remember(db_id, "outgoing", clean)
         await _send(message, clean, vk_kb.kb_ai_chat())
@@ -478,6 +479,7 @@ async def _handle_ai(message: Message, user_id: int, db_id: int, text: str) -> N
             await _send(message, _strip_md(msg.MANAGER_CONNECTED))
         else:
             await _send(message, _strip_md(msg.FALLBACK_AI), vk_kb.kb_ai_chat())
+        await _maybe_nudge_to_order(user_id, db_id, message)
 
 
 async def _handle_get_name(message: Message, user_id: int, db_id: int, name: str) -> None:

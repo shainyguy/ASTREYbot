@@ -92,6 +92,9 @@ async def _maybe_nudge_to_order(user_id: int, message: Message) -> None:
 async def cb_start_funnel(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(Funnel.choose_occasion)
+    # Сбрасываем счётчик «непониманий»: иначе накопленный с прошлых
+    # заходов confusion мог сразу выкинуть клиента к менеджеру
+    await db.update_user(call.from_user.id, ai_confusion_count=0)
     await db.upsert_lead(call.from_user.id, stage="choose_occasion")
     await _update_bot_msg_time(call.from_user.id)
     await call.message.edit_text(msg.CHOOSE_OCCASION, reply_markup=kb.kb_occasion(), parse_mode="Markdown")

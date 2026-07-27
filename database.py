@@ -513,9 +513,11 @@ async def upsert_lead(telegram_id: int, **kwargs) -> int:
     if existing:
         lead_id = existing["id"] if isinstance(existing, dict) else existing[0]
         if kwargs:
-            kwargs["lid"] = lead_id
+            # lead_id идёт только в WHERE, не в SET — иначе получалось
+            # UPDATE ... SET lid = ?, а колонки lid нет, и вся воронка падала
             fields = ", ".join(f"{k} = ?" for k in kwargs)
-            params = {str(i): v for i, (k, v) in enumerate(kwargs.items())}
+            params = {str(i): v for i, v in enumerate(kwargs.values())}
+            params[str(len(kwargs))] = lead_id
             await _DB.execute(
                 f"UPDATE leads SET {fields}, updated_at = {_now()} WHERE id = ?",
                 params

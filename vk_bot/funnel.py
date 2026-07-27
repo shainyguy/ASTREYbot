@@ -279,7 +279,7 @@ async def handle_message(message: Message) -> None:
 async def _show_welcome(message: Message, user_id: int, db_id: int) -> None:
     st.clear(user_id)
     gc.clear_history(db_id)
-    await db.update_user(db_id, stage="welcome")
+    await db.update_user(db_id, stage="welcome", ai_confusion_count=0)
     text = _strip_md(msg.WELCOME) + "\n\n📱 Пишешь из ВКонтакте — ответим мгновенно!"
     await _update_bot_msg_time(db_id)
     await _send(message, text, vk_kb.kb_welcome())
@@ -287,7 +287,7 @@ async def _show_welcome(message: Message, user_id: int, db_id: int) -> None:
 
 async def _ask_occasion(message: Message, user_id: int, db_id: int) -> None:
     st.set_state(user_id, st.CHOOSE_OCCASION)
-    await db.update_user(db_id, stage="choose_occasion")
+    await db.update_user(db_id, stage="choose_occasion", ai_confusion_count=0)
     await db.upsert_lead(db_id, stage="choose_occasion", platform="vk")
     await _update_bot_msg_time(db_id)
     await _send(message, _strip_md(msg.CHOOSE_OCCASION), vk_kb.kb_occasion())

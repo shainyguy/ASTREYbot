@@ -27,6 +27,7 @@ async def cmd_start(message: Message, state: FSMContext):
     )
     recent.remember(user.id, "incoming", "/start")
     gc.clear_history(user.id)
+    await db.update_user(user.id, ai_confusion_count=0, stage="welcome")
 
     # Deep link: /start subscribe_42
     text = message.text or ""
